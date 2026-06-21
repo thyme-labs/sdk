@@ -7,6 +7,7 @@ export interface TaskConfig {
 	timeout: number // seconds
 	network: boolean
 	rpcUrl?: string // RPC URL for public client
+	env?: Record<string, string> // runtime env loaded from root/task .env files
 }
 
 export interface RunResult {
@@ -48,6 +49,28 @@ function sanitizeArgs(args: unknown): unknown {
 	} catch {
 		return {}
 	}
+}
+
+const RESERVED_SECRET_KEYS = new Set([
+	'THYME_API_URL',
+	'THYME_AUTH_TOKEN',
+	'RPC_URL',
+])
+const UNSAFE_SECRET_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+function buildSecrets(
+	env: Record<string, string> = {},
+): Record<string, string> {
+	const secrets: Record<string, string> = {}
+
+	for (const [key, value] of Object.entries(env)) {
+		if (RESERVED_SECRET_KEYS.has(key) || UNSAFE_SECRET_KEYS.has(key)) {
+			continue
+		}
+		secrets[key] = value
+	}
+
+	return secrets
 }
 
 /**
@@ -93,8 +116,12 @@ export async function runInDeno(
 	// Sanitize args to prevent prototype pollution
 	const safeArgs = sanitizeArgs(args)
 
+	const runtimeEnv = config.env ?? {}
+	const safeSecrets = JSON.stringify(buildSecrets(runtimeEnv))
+
 	// Safely serialize RPC URL
-	const safeRpcUrl = config.rpcUrl ? JSON.stringify(config.rpcUrl) : 'undefined'
+	const rpcUrl = config.rpcUrl ?? runtimeEnv.RPC_URL
+	const safeRpcUrl = rpcUrl ? JSON.stringify(rpcUrl) : 'undefined'
 
 	// Node.js built-in modules that need to be mapped to node: prefix for Deno
 	const nodeBuiltins = [
@@ -211,6 +238,7 @@ const context = {
 	args: ${JSON.stringify(safeArgs)},
 	client,
 	logger: new Logger(),
+	secrets: ${safeSecrets},
 };
 
 try {
@@ -239,6 +267,10 @@ try {
 		const proc = spawn('deno', denoFlags, {
 			stdio: ['pipe', 'pipe', 'pipe'],
 			cwd: taskDir,
+			env: {
+				...process.env,
+				...runtimeEnv,
+			},
 		})
 
 		let stdout = ''

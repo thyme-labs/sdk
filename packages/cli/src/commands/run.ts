@@ -3,10 +3,17 @@ import { readFile } from 'node:fs/promises'
 import type { Address } from 'viem'
 import { createPublicClient, formatEther, http, isAddress } from 'viem'
 import { checkDeno, runInDeno, type TaskConfig } from '../deno/runner'
-import { getEnv, loadEnv } from '../utils/env'
+import {
+	type EnvMap,
+	getEnv,
+	loadEnv,
+	loadEnvFile,
+	resolveLoadedEnv,
+} from '../utils/env'
 import {
 	discoverTasks,
 	getTaskArgsPath,
+	getTaskEnvPath,
 	getTaskPath,
 	isThymeProject,
 	validateTaskName,
@@ -33,7 +40,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	const projectRoot = process.cwd()
 
 	// Load environment variables
-	loadEnv(projectRoot)
+	const rootEnv = loadEnv(projectRoot)
 
 	// Check if we're in a Thyme project
 	if (!isThymeProject(projectRoot)) {
@@ -82,9 +89,11 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 
 	let taskPath: string
 	let argsPath: string
+	let taskEnvPath: string
 	try {
 		taskPath = getTaskPath(projectRoot, finalTaskName)
 		argsPath = getTaskArgsPath(projectRoot, finalTaskName)
+		taskEnvPath = getTaskEnvPath(projectRoot, finalTaskName)
 	} catch (err) {
 		error(err instanceof Error ? err.message : String(err))
 		process.exit(1)
@@ -96,12 +105,17 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		process.exit(1)
 	}
 
+	// Load task-local env after task selection; these values override root .env.
+	const taskEnv = loadEnvFile(taskEnvPath, { override: true })
+	const runtimeEnv = resolveLoadedEnv(rootEnv, taskEnv)
+
 	// Use default config
 	const config: TaskConfig = {
 		memory: 128,
 		timeout: 30,
 		network: true,
-		rpcUrl: getEnv('RPC_URL'),
+		rpcUrl: runtimeEnv.RPC_URL ?? getEnv('RPC_URL'),
+		env: runtimeEnv,
 	}
 
 	// Load args
@@ -169,7 +183,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		// Simulate if requested
 		if (options.simulate) {
 			log('')
-			await simulateCalls(result.result.calls)
+			await simulateCalls(result.result.calls, runtimeEnv)
 		}
 	} else {
 		warn('Result: canExec = false')
@@ -210,12 +224,15 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 
 async function simulateCalls(
 	calls: Array<{ to: Address; data: `0x${string}` }>,
+	runtimeEnv: EnvMap,
 ) {
-	const rpcUrl = getEnv('RPC_URL')
-	const account = getEnv('SIMULATE_ACCOUNT')
+	const rpcUrl = runtimeEnv.RPC_URL ?? getEnv('RPC_URL')
+	const account = runtimeEnv.SIMULATE_ACCOUNT ?? getEnv('SIMULATE_ACCOUNT')
 
 	if (!rpcUrl || !account) {
-		warn('Simulation requires RPC_URL and SIMULATE_ACCOUNT in .env file')
+		warn(
+			'Simulation requires RPC_URL and SIMULATE_ACCOUNT in root .env or functions/<task>/.env',
+		)
 		return
 	}
 

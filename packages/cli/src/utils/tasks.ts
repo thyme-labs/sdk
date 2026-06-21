@@ -126,6 +126,27 @@ export function getTaskArgsPath(projectRoot: string, taskName: string): string {
 }
 
 /**
+ * Get the path to a task's local env file
+ * Includes path traversal protection
+ *
+ * @throws Error if task name is invalid or path escapes functions directory
+ */
+export function getTaskEnvPath(projectRoot: string, taskName: string): string {
+	// Validate task name first
+	validateTaskName(taskName)
+
+	const functionsDir = resolve(projectRoot, 'functions')
+	const envPath = resolve(functionsDir, taskName, '.env')
+
+	// Ensure the resolved path is within the functions directory
+	if (!envPath.startsWith(functionsDir)) {
+		throw new Error('Invalid task path: path traversal detected')
+	}
+
+	return envPath
+}
+
+/**
  * Check if we're in a Thyme project
  * Validates by checking for functions directory AND package.json with @thyme-labs/sdk
  */

@@ -12,6 +12,8 @@ export interface ThymeContext<TArgs> {
 	client: PublicClient
 	/** Logger for outputting messages to the Thyme dashboard */
 	logger: Logger
+	/** Executable secrets available to the task */
+	secrets: Record<string, string>
 }
 
 /**

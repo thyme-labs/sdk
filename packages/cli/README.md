@@ -31,6 +31,7 @@ thyme new my-task
 Creates:
 - `functions/my-task/index.ts` - Task definition
 - `functions/my-task/args.json` - Test arguments
+- `functions/my-task/.env.example` - Task-local secret template
 
 ### `thyme run [task]`
 
@@ -109,7 +110,7 @@ The extracted JSON Schema is stored in the database alongside the task code, ena
 
 ## Environment Variables
 
-Create a `.env` file in your project root:
+Create a `.env` file in your project root for CLI/project defaults:
 
 ```bash
 # RPC URL for blockchain reads and simulation
@@ -131,6 +132,15 @@ THYME_API_URL=https://your-deployment.convex.cloud
   - Providing the public client in task context (`ctx.client`)
   - Running on-chain simulations with `--simulate` flag
 - `THYME_API_URL` should be set to your Convex deployment URL (found in your Convex dashboard or `.env.local` file as `VITE_CONVEX_URL`)
+
+For `thyme run`, the CLI also loads `functions/<task>/.env` after task
+selection. Task-local values override root `.env` values for that task and are
+available as `ctx.secrets`, except reserved project keys such as
+`THYME_API_URL`, `THYME_AUTH_TOKEN`, and `RPC_URL`. `SIMULATE_ACCOUNT` can be set
+in either root `.env` or `functions/<task>/.env` for `thyme run --simulate`.
+
+Task `.env` files are gitignored. Commit `functions/<task>/.env.example`
+templates instead.
 
 ## Requirements
 
