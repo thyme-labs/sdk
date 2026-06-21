@@ -8,6 +8,8 @@ export { defineTask } from './task'
 export type {
 	Call,
 	FailResult,
+	JsonObject,
+	JsonValue,
 	SuccessResult,
 	TaskDefinition,
 	TaskResult,

@@ -31,6 +31,7 @@ thyme new my-task
 Creates:
 - `functions/my-task/index.ts` - Task definition
 - `functions/my-task/args.json` - Test arguments
+- `functions/my-task/storage.json` - Local executable storage seed
 - `functions/my-task/.env.example` - Task-local secret template
 
 ### `thyme run [task]`
@@ -46,9 +47,16 @@ thyme run my-task
 
 # Run with on-chain simulation
 thyme run my-task --simulate
+
+# Persist produced storage back to storage.json
+thyme run my-task --persist
 ```
 
 Requires Deno to be installed: https://deno.land/
+
+`thyme run` reads `functions/<task>/storage.json` when it exists and exposes it
+as `ctx.storage`. By default the produced storage is printed and not written
+back. Use `--persist` to overwrite `storage.json`.
 
 ### `thyme list`
 

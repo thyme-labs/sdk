@@ -145,6 +145,10 @@ export default defineTask({
 		}
 
 		await writeFile(join(taskPath, 'args.json'), JSON.stringify(args, null, 2))
+		await writeFile(
+			join(taskPath, 'storage.json'),
+			`${JSON.stringify({}, null, 2)}\n`,
+		)
 
 		// Create task-local env example
 		const envExample = `# Task-local secrets for ctx.secrets during \`thyme run\`

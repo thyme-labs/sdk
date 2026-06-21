@@ -22,7 +22,7 @@
 	"scripts": {
 		"build": "tsup",
 		"dev": "tsup --watch",
-		"test": "echo \"No tests yet\""
+		"test": "bun test"
 	},
 	"keywords": [
 		"web3",

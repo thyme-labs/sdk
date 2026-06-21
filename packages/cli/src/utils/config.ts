@@ -66,25 +66,29 @@ const DEFAULT_API_URL =
 	'https://convex-backend-production-f25e.up.railway.app/http'
 
 export function getApiUrl(): string {
-	// 1. Global config
+	// 1. Environment variable or .env file (highest priority, 12-factor style)
+	const envApiUrl = getEnv('THYME_API_URL')
+	if (envApiUrl) return envApiUrl
+
+	// 2. Global config (explicit override, e.g. `thyme login --api-url`)
 	const config = readConfig()
 	if (config.apiUrl) return config.apiUrl
 
-	// 2. Environment variable or .env file
-	return getEnv('THYME_API_URL') ?? DEFAULT_API_URL
+	// 3. Built-in default
+	return DEFAULT_API_URL
 }
 
 export function getApiUrlInfo(): { url: string; source: ApiUrlSource } {
-	// 1. Global config
-	const config = readConfig()
-	if (config.apiUrl) {
-		return { url: config.apiUrl, source: 'config' }
-	}
-
-	// 2. Environment variable or .env file
+	// 1. Environment variable or .env file (highest priority, 12-factor style)
 	const envApiUrl = getEnv('THYME_API_URL')
 	if (envApiUrl) {
 		return { url: envApiUrl, source: 'env' }
+	}
+
+	// 2. Global config (explicit override, e.g. `thyme login --api-url`)
+	const config = readConfig()
+	if (config.apiUrl) {
+		return { url: config.apiUrl, source: 'config' }
 	}
 
 	// 3. Fallback default

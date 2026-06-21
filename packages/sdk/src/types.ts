@@ -2,6 +2,16 @@ import type { Address, Hex, PublicClient } from 'viem'
 import type { z } from 'zod'
 import type { Logger } from './logger'
 
+export type JsonValue =
+	| null
+	| boolean
+	| number
+	| string
+	| JsonValue[]
+	| { [key: string]: JsonValue }
+
+export type JsonObject = { [key: string]: JsonValue }
+
 /**
  * Context provided to task execution
  */
@@ -14,6 +24,8 @@ export interface ThymeContext<TArgs> {
 	logger: Logger
 	/** Executable secrets available to the task */
 	secrets: Record<string, string>
+	/** Persistent JSON storage scoped to this executable */
+	storage: JsonObject
 }
 
 /**

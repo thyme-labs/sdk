@@ -14,6 +14,7 @@ export interface DecompressResult {
 // Maximum sizes for ZIP bomb protection
 const MAX_ZIP_SIZE = 10 * 1024 * 1024 // 10MB compressed
 const MAX_DECOMPRESSED_SIZE = 50 * 1024 * 1024 // 50MB decompressed
+const MAX_FILE_COUNT = 16 // task archives only ever hold source.ts + bundle.js
 
 /**
  * Calculate SHA-256 checksum of data
@@ -66,23 +67,35 @@ export function decompressTask(
 		)
 	}
 
-	// Decompress ZIP
-	const decompressed = unzipSync(uint8Array)
-
-	// ZIP bomb protection: check total decompressed size
-	let totalDecompressedSize = 0
-	for (const key of Object.keys(decompressed)) {
-		const file = decompressed[key]
-		if (file) {
-			totalDecompressedSize += file.length
-		}
-	}
-
-	if (totalDecompressedSize > MAX_DECOMPRESSED_SIZE) {
-		throw new Error(
-			`Decompressed content too large: ${totalDecompressedSize} bytes (max: ${MAX_DECOMPRESSED_SIZE})`,
-		)
-	}
+	// ZIP bomb protection: bound memory BEFORE inflating. fflate's `filter`
+	// runs per entry with the declared uncompressed size (`originalSize`) and
+	// never inflates an entry beyond it, so skipping unwanted entries and
+	// rejecting on the declared total caps real memory use and defeats zip
+	// bombs without ever materialising them.
+	let declaredTotal = 0
+	let fileCount = 0
+	const decompressed = unzipSync(uint8Array, {
+		filter(file) {
+			if (++fileCount > MAX_FILE_COUNT) {
+				throw new Error(
+					`Too many files in ZIP archive (max: ${MAX_FILE_COUNT})`,
+				)
+			}
+			// Only inflate the two files we need; everything else is skipped and
+			// therefore can never expand in memory.
+			const wanted = file.name === 'source.ts' || file.name === 'bundle.js'
+			if (!wanted) {
+				return false
+			}
+			declaredTotal += file.originalSize
+			if (declaredTotal > MAX_DECOMPRESSED_SIZE) {
+				throw new Error(
+					`Decompressed content too large: ${declaredTotal} bytes (max: ${MAX_DECOMPRESSED_SIZE})`,
+				)
+			}
+			return true
+		},
+	})
 
 	// Extract files
 	const sourceBytes = decompressed['source.ts']

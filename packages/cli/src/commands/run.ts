@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import type { Address } from 'viem'
 import { createPublicClient, formatEther, http, isAddress } from 'viem'
 import { checkDeno, runInDeno, type TaskConfig } from '../deno/runner'
@@ -15,6 +15,7 @@ import {
 	getTaskArgsPath,
 	getTaskEnvPath,
 	getTaskPath,
+	getTaskStoragePath,
 	isThymeProject,
 	validateTaskName,
 } from '../utils/tasks'
@@ -32,6 +33,7 @@ import {
 
 interface RunOptions {
 	simulate?: boolean
+	persist?: boolean
 }
 
 export async function runCommand(taskName?: string, options: RunOptions = {}) {
@@ -89,10 +91,12 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 
 	let taskPath: string
 	let argsPath: string
+	let storagePath: string
 	let taskEnvPath: string
 	try {
 		taskPath = getTaskPath(projectRoot, finalTaskName)
 		argsPath = getTaskArgsPath(projectRoot, finalTaskName)
+		storagePath = getTaskStoragePath(projectRoot, finalTaskName)
 		taskEnvPath = getTaskEnvPath(projectRoot, finalTaskName)
 	} catch (err) {
 		error(err instanceof Error ? err.message : String(err))
@@ -131,11 +135,23 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		}
 	}
 
+	let storage: unknown = {}
+	if (existsSync(storagePath)) {
+		try {
+			const storageData = await readFile(storagePath, 'utf-8')
+			storage = JSON.parse(storageData)
+		} catch (err) {
+			warn(
+				`Failed to load storage.json: ${err instanceof Error ? err.message : String(err)}`,
+			)
+		}
+	}
+
 	const spinner = clack.spinner()
 	spinner.start('Executing task in Deno sandbox...')
 
 	// Run task
-	const result = await runInDeno(taskPath, args, config, projectRoot)
+	const result = await runInDeno(taskPath, args, config, projectRoot, storage)
 
 	if (!result.success) {
 		spinner.stop('Task execution failed')
@@ -208,6 +224,30 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		if (result.rpcRequestCount !== undefined) {
 			log(`  RPC Requests: ${result.rpcRequestCount}`)
 		}
+	}
+
+	const producedStorage = result.storage ?? {}
+	log('')
+	if (options.persist) {
+		try {
+			await writeFile(
+				storagePath,
+				`${JSON.stringify(producedStorage, null, 2)}\n`,
+			)
+			info(`Storage persisted to ${storagePath}`)
+		} catch (err) {
+			error(
+				`Failed to persist storage.json: ${err instanceof Error ? err.message : String(err)}`,
+			)
+			process.exit(1)
+		}
+	} else {
+		step('Produced storage (not persisted):')
+		const storageJson = JSON.stringify(producedStorage, null, 2)
+		for (const line of storageJson.split('\n')) {
+			log(`  ${line}`)
+		}
+		info('Use --persist to write this output to storage.json')
 	}
 
 	// Show simulation tip if task can execute and simulation wasn't run
