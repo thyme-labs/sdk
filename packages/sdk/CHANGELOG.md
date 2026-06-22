@@ -1,5 +1,11 @@
 # @thyme-labs/sdk
 
+## 0.4.0
+
+### Minor Changes
+
+- f4b5eea: Added secrets and storage per task
+
 ## 0.3.2
 
 ### Patch Changes
