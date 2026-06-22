@@ -90,7 +90,10 @@ export async function initCommand(projectName?: string) {
 		)
 
 		// Create .env.example
-		const envExample = `# Simulation settings (for --simulate flag)
+		const envExample = `# Project-wide defaults for local task execution
+# Task-local values can be set in functions/<task>/.env and override these.
+
+# Simulation settings (for --simulate flag)
 RPC_URL=https://eth-sepolia.g.alchemy.com/v2/your-key
 SIMULATE_ACCOUNT=0x742d35Cc6634C0532925a3b844Bc454e4438f44e
 
@@ -109,6 +112,8 @@ THYME_API_URL=
 dist/
 .env
 .env.local
+functions/**/.env
+functions/**/.env.local
 *.log
 `
 
@@ -146,7 +151,13 @@ functions/
   my-task/
     index.ts      # Task definition
     args.json     # Test arguments
+    .env.example  # Task-local secret template
 \`\`\`
+
+Root \`.env\` values configure CLI/project defaults. For task-specific runtime
+secrets, copy \`functions/my-task/.env.example\` to \`functions/my-task/.env\`;
+those values are available as \`ctx.secrets\` during \`thyme run\` and override
+root \`.env\` values for that task.
 `
 
 		await writeFile(join(projectPath, 'README.md'), readme)

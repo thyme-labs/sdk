@@ -1,13 +1,21 @@
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import type { Address } from 'viem'
 import { createPublicClient, formatEther, http, isAddress } from 'viem'
 import { checkDeno, runInDeno, type TaskConfig } from '../deno/runner'
-import { getEnv, loadEnv } from '../utils/env'
+import {
+	type EnvMap,
+	getEnv,
+	loadEnv,
+	loadEnvFile,
+	resolveLoadedEnv,
+} from '../utils/env'
 import {
 	discoverTasks,
 	getTaskArgsPath,
+	getTaskEnvPath,
 	getTaskPath,
+	getTaskStoragePath,
 	isThymeProject,
 	validateTaskName,
 } from '../utils/tasks'
@@ -25,6 +33,7 @@ import {
 
 interface RunOptions {
 	simulate?: boolean
+	persist?: boolean
 }
 
 export async function runCommand(taskName?: string, options: RunOptions = {}) {
@@ -33,7 +42,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	const projectRoot = process.cwd()
 
 	// Load environment variables
-	loadEnv(projectRoot)
+	const rootEnv = loadEnv(projectRoot)
 
 	// Check if we're in a Thyme project
 	if (!isThymeProject(projectRoot)) {
@@ -82,9 +91,13 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 
 	let taskPath: string
 	let argsPath: string
+	let storagePath: string
+	let taskEnvPath: string
 	try {
 		taskPath = getTaskPath(projectRoot, finalTaskName)
 		argsPath = getTaskArgsPath(projectRoot, finalTaskName)
+		storagePath = getTaskStoragePath(projectRoot, finalTaskName)
+		taskEnvPath = getTaskEnvPath(projectRoot, finalTaskName)
 	} catch (err) {
 		error(err instanceof Error ? err.message : String(err))
 		process.exit(1)
@@ -96,12 +109,17 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		process.exit(1)
 	}
 
+	// Load task-local env after task selection; these values override root .env.
+	const taskEnv = loadEnvFile(taskEnvPath, { override: true })
+	const runtimeEnv = resolveLoadedEnv(rootEnv, taskEnv)
+
 	// Use default config
 	const config: TaskConfig = {
 		memory: 128,
 		timeout: 30,
 		network: true,
-		rpcUrl: getEnv('RPC_URL'),
+		rpcUrl: runtimeEnv.RPC_URL ?? getEnv('RPC_URL'),
+		env: runtimeEnv,
 	}
 
 	// Load args
@@ -117,11 +135,23 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		}
 	}
 
+	let storage: unknown = {}
+	if (existsSync(storagePath)) {
+		try {
+			const storageData = await readFile(storagePath, 'utf-8')
+			storage = JSON.parse(storageData)
+		} catch (err) {
+			warn(
+				`Failed to load storage.json: ${err instanceof Error ? err.message : String(err)}`,
+			)
+		}
+	}
+
 	const spinner = clack.spinner()
 	spinner.start('Executing task in Deno sandbox...')
 
 	// Run task
-	const result = await runInDeno(taskPath, args, config, projectRoot)
+	const result = await runInDeno(taskPath, args, config, projectRoot, storage)
 
 	if (!result.success) {
 		spinner.stop('Task execution failed')
@@ -169,7 +199,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		// Simulate if requested
 		if (options.simulate) {
 			log('')
-			await simulateCalls(result.result.calls)
+			await simulateCalls(result.result.calls, runtimeEnv)
 		}
 	} else {
 		warn('Result: canExec = false')
@@ -196,6 +226,30 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		}
 	}
 
+	const producedStorage = result.storage ?? {}
+	log('')
+	if (options.persist) {
+		try {
+			await writeFile(
+				storagePath,
+				`${JSON.stringify(producedStorage, null, 2)}\n`,
+			)
+			info(`Storage persisted to ${storagePath}`)
+		} catch (err) {
+			error(
+				`Failed to persist storage.json: ${err instanceof Error ? err.message : String(err)}`,
+			)
+			process.exit(1)
+		}
+	} else {
+		step('Produced storage (not persisted):')
+		const storageJson = JSON.stringify(producedStorage, null, 2)
+		for (const line of storageJson.split('\n')) {
+			log(`  ${line}`)
+		}
+		info('Use --persist to write this output to storage.json')
+	}
+
 	// Show simulation tip if task can execute and simulation wasn't run
 	if (result.result?.canExec && !options.simulate) {
 		log('')
@@ -210,12 +264,15 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 
 async function simulateCalls(
 	calls: Array<{ to: Address; data: `0x${string}` }>,
+	runtimeEnv: EnvMap,
 ) {
-	const rpcUrl = getEnv('RPC_URL')
-	const account = getEnv('SIMULATE_ACCOUNT')
+	const rpcUrl = runtimeEnv.RPC_URL ?? getEnv('RPC_URL')
+	const account = runtimeEnv.SIMULATE_ACCOUNT ?? getEnv('SIMULATE_ACCOUNT')
 
 	if (!rpcUrl || !account) {
-		warn('Simulation requires RPC_URL and SIMULATE_ACCOUNT in .env file')
+		warn(
+			'Simulation requires RPC_URL and SIMULATE_ACCOUNT in root .env or functions/<task>/.env',
+		)
 		return
 	}
 

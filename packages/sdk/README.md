@@ -176,7 +176,53 @@ export default defineTask({
 })
 ```
 
-The client is configured using the `RPC_URL` environment variable in your `.env` file.
+The client is configured using the `RPC_URL` environment variable in your root
+`.env` file, or a task-local `functions/<task>/.env` file when running locally.
+Task-local values override root values for that task.
+
+## Executable Secrets
+
+Use `ctx.secrets` to read executable secrets:
+
+```typescript
+export default defineTask({
+  schema: z.object({}),
+
+  async run(ctx) {
+    const apiKey = ctx.secrets.MY_API_KEY
+
+    // ...
+    return { canExec: false, message: 'Not ready' }
+  }
+})
+```
+
+For local runs, put task-specific secrets in `functions/<task>/.env`. Cloud
+project config keys such as `THYME_API_URL`, `THYME_AUTH_TOKEN`, and `RPC_URL`
+are not exposed through `ctx.secrets`.
+
+## Executable Storage
+
+Use `ctx.storage` for small JSON state that should persist across executions of
+the same executable:
+
+```typescript
+export default defineTask({
+  schema: z.object({}),
+
+  async run(ctx) {
+    ctx.storage.runs = ((ctx.storage.runs as number | undefined) ?? 0) + 1
+    ctx.storage.lastCheckedAt = Date.now()
+
+    return { canExec: false, message: 'State updated' }
+  }
+})
+```
+
+Storage must be a JSON object. Do not put secrets in storage; use
+`ctx.secrets` for credentials. Local runs read `functions/<task>/storage.json`
+when it exists. By default `thyme run` prints the produced storage without
+overwriting the file; pass `--persist` to write it back.
 
 ## Encoding Function Calls
 
@@ -238,6 +284,9 @@ The task definition (for type inference).
 Context provided to task execution:
 - `args` - User-provided arguments validated against schema
 - `client` - Viem public client for reading blockchain data
+- `logger` - Logger for task output
+- `secrets` - Executable secrets available to the task
+- `storage` - Persistent JSON storage scoped to this executable
 
 ### `TaskResult`
 

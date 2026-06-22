@@ -96,6 +96,9 @@ export default defineTask({
 		// Example: Log warnings and errors
 		// logger.warn('Low balance detected')
 		// logger.error('Failed to fetch data')
+		//
+		// Example: Read task-local secrets from functions/${finalTaskName}/.env
+		// const apiKey = ctx.secrets.MY_API_KEY
 
 		// Example: Return calls to execute
 		logger.info('Task completed successfully')
@@ -142,6 +145,22 @@ export default defineTask({
 		}
 
 		await writeFile(join(taskPath, 'args.json'), JSON.stringify(args, null, 2))
+		await writeFile(
+			join(taskPath, 'storage.json'),
+			`${JSON.stringify({}, null, 2)}\n`,
+		)
+
+		// Create task-local env example
+		const envExample = `# Task-local secrets for ctx.secrets during \`thyme run\`
+# Copy this file to .env. The .env file is gitignored.
+# Values here override project root .env for this task.
+MY_API_KEY=
+
+# Optional: set a task-specific simulate account.
+# SIMULATE_ACCOUNT=0x742d35Cc6634C0532925a3b844Bc454e4438f44e
+`
+
+		await writeFile(join(taskPath, '.env.example'), envExample)
 
 		spinner.stop('Task created successfully!')
 

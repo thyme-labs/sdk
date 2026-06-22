@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
@@ -126,6 +126,51 @@ export function getTaskArgsPath(projectRoot: string, taskName: string): string {
 }
 
 /**
+ * Get the path to a task's local storage file
+ * Includes path traversal protection
+ *
+ * @throws Error if task name is invalid or path escapes functions directory
+ */
+export function getTaskStoragePath(
+	projectRoot: string,
+	taskName: string,
+): string {
+	// Validate task name first
+	validateTaskName(taskName)
+
+	const functionsDir = resolve(projectRoot, 'functions')
+	const storagePath = resolve(functionsDir, taskName, 'storage.json')
+
+	// Ensure the resolved path is within the functions directory
+	if (!storagePath.startsWith(functionsDir)) {
+		throw new Error('Invalid task path: path traversal detected')
+	}
+
+	return storagePath
+}
+
+/**
+ * Get the path to a task's local env file
+ * Includes path traversal protection
+ *
+ * @throws Error if task name is invalid or path escapes functions directory
+ */
+export function getTaskEnvPath(projectRoot: string, taskName: string): string {
+	// Validate task name first
+	validateTaskName(taskName)
+
+	const functionsDir = resolve(projectRoot, 'functions')
+	const envPath = resolve(functionsDir, taskName, '.env')
+
+	// Ensure the resolved path is within the functions directory
+	if (!envPath.startsWith(functionsDir)) {
+		throw new Error('Invalid task path: path traversal detected')
+	}
+
+	return envPath
+}
+
+/**
  * Check if we're in a Thyme project
  * Validates by checking for functions directory AND package.json with @thyme-labs/sdk
  */
@@ -142,8 +187,7 @@ export function isThymeProject(projectRoot: string): boolean {
 	if (existsSync(packageJsonPath)) {
 		try {
 			// Synchronous check for simplicity in this validation function
-			const fs = require('node:fs')
-			const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
+			const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'))
 			const deps = {
 				...packageJson.dependencies,
 				...packageJson.devDependencies,

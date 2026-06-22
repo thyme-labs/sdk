@@ -56,6 +56,7 @@ program
 	.description('Run a task locally')
 	.argument('[task]', 'Task name')
 	.option('--simulate', 'Simulate on-chain execution')
+	.option('--persist', 'Write produced storage back to storage.json')
 	.action((task, options) => runCommand(task, options))
 
 program.command('list').description('List all tasks').action(listCommand)

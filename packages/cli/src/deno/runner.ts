@@ -2,22 +2,41 @@ import { spawn } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import type { TaskResult } from '@thyme-labs/sdk'
 
+type JsonValue =
+	| null
+	| boolean
+	| number
+	| string
+	| JsonValue[]
+	| { [key: string]: JsonValue }
+
+type JsonObject = { [key: string]: JsonValue }
+
 export interface TaskConfig {
 	memory: number // MB
 	timeout: number // seconds
 	network: boolean
 	rpcUrl?: string // RPC URL for public client
+	env?: Record<string, string> // runtime env loaded from root/task .env files
 }
 
 export interface RunResult {
 	success: boolean
 	result?: TaskResult
+	storage?: JsonObject
 	logs: string[]
 	error?: string
 	executionTime?: number // milliseconds
 	memoryUsed?: number // bytes
 	rpcRequestCount?: number // number of RPC requests made
 }
+
+const STORAGE_MAX_BYTES = 64 * 1024
+const FORBIDDEN_STORAGE_KEYS = new Set([
+	'__proto__',
+	'constructor',
+	'prototype',
+])
 
 /**
  * Escape a string for safe use in JavaScript string literals
@@ -48,6 +67,93 @@ function sanitizeArgs(args: unknown): unknown {
 	} catch {
 		return {}
 	}
+}
+
+function byteLength(value: string): number {
+	return new TextEncoder().encode(value).length
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return false
+	}
+	const prototype = Object.getPrototypeOf(value)
+	return prototype === Object.prototype || prototype === null
+}
+
+function validateJsonStorageValue(value: unknown, path: string): void {
+	if (value === null) return
+
+	const type = typeof value
+	if (type === 'string' || type === 'boolean') return
+
+	if (type === 'number') {
+		if (!Number.isFinite(value) || Object.is(value, -0)) {
+			throw new Error(`Storage contains an invalid number at ${path}`)
+		}
+		return
+	}
+
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index += 1) {
+			if (value[index] === undefined) {
+				throw new Error(`Storage contains undefined at ${path}[${index}]`)
+			}
+			validateJsonStorageValue(value[index], `${path}[${index}]`)
+		}
+		return
+	}
+
+	if (isPlainObject(value)) {
+		for (const [key, item] of Object.entries(value)) {
+			if (FORBIDDEN_STORAGE_KEYS.has(key)) {
+				throw new Error(`Storage contains forbidden key "${key}" at ${path}`)
+			}
+			if (item === undefined) {
+				throw new Error(`Storage contains undefined at ${path}.${key}`)
+			}
+			validateJsonStorageValue(item, `${path}.${key}`)
+		}
+		return
+	}
+
+	throw new Error(`Storage contains unsupported value at ${path}`)
+}
+
+function normalizeStorage(storage: unknown): JsonObject {
+	if (!isPlainObject(storage)) {
+		throw new Error('Storage must be a JSON object')
+	}
+	validateJsonStorageValue(storage, '$')
+	const json = JSON.stringify(storage)
+	if (byteLength(json) > STORAGE_MAX_BYTES) {
+		throw new Error(
+			`Storage is too large (${byteLength(json)} bytes, max ${STORAGE_MAX_BYTES})`,
+		)
+	}
+	return JSON.parse(json) as JsonObject
+}
+
+const RESERVED_SECRET_KEYS = new Set([
+	'THYME_API_URL',
+	'THYME_AUTH_TOKEN',
+	'RPC_URL',
+])
+const UNSAFE_SECRET_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+function buildSecrets(
+	env: Record<string, string> = {},
+): Record<string, string> {
+	const secrets: Record<string, string> = {}
+
+	for (const [key, value] of Object.entries(env)) {
+		if (RESERVED_SECRET_KEYS.has(key) || UNSAFE_SECRET_KEYS.has(key)) {
+			continue
+		}
+		secrets[key] = value
+	}
+
+	return secrets
 }
 
 /**
@@ -82,6 +188,7 @@ export async function runInDeno(
 	args: unknown,
 	config: TaskConfig,
 	projectRoot: string,
+	storage: unknown = {},
 ): Promise<RunResult> {
 	const taskDir = dirname(resolve(taskPath))
 	const absoluteTaskPath = resolve(taskPath)
@@ -92,9 +199,26 @@ export async function runInDeno(
 
 	// Sanitize args to prevent prototype pollution
 	const safeArgs = sanitizeArgs(args)
+	let safeStorage: JsonObject
+	try {
+		safeStorage = normalizeStorage(storage)
+	} catch (err) {
+		return {
+			success: false,
+			logs: [],
+			error: sanitizeErrorMessage(
+				err instanceof Error ? err.message : String(err),
+			),
+		}
+	}
+
+	const runtimeEnv = config.env ?? {}
+	const safeSecrets = JSON.stringify(buildSecrets(runtimeEnv))
+	const safeStorageJson = JSON.stringify(safeStorage)
 
 	// Safely serialize RPC URL
-	const safeRpcUrl = config.rpcUrl ? JSON.stringify(config.rpcUrl) : 'undefined'
+	const rpcUrl = config.rpcUrl ?? runtimeEnv.RPC_URL
+	const safeRpcUrl = rpcUrl ? JSON.stringify(rpcUrl) : 'undefined'
 
 	// Node.js built-in modules that need to be mapped to node: prefix for Deno
 	const nodeBuiltins = [
@@ -207,10 +331,56 @@ const client = createPublicClient({
 	transport: countingHttp(${safeRpcUrl}),
 });
 
+function isPlainObject(value) {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
+}
+
+const forbiddenStorageKeys = new Set(['__proto__', 'constructor', 'prototype']);
+
+function assertJsonStorage(value, path = '$') {
+	if (value === null) return;
+	const type = typeof value;
+	if (type === 'string' || type === 'boolean') return;
+	if (type === 'number') {
+		if (!Number.isFinite(value) || Object.is(value, -0)) {
+			throw new Error('Storage contains an invalid number at ' + path);
+		}
+		return;
+	}
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index += 1) {
+			if (value[index] === undefined) {
+				throw new Error('Storage contains undefined at ' + path + '[' + index + ']');
+			}
+			assertJsonStorage(value[index], path + '[' + index + ']');
+		}
+		return;
+	}
+	if (isPlainObject(value)) {
+		for (const [key, item] of Object.entries(value)) {
+			if (forbiddenStorageKeys.has(key)) {
+				throw new Error('Storage contains forbidden key "' + key + '" at ' + path);
+			}
+			if (item === undefined) {
+				throw new Error('Storage contains undefined at ' + path + '.' + key);
+			}
+			assertJsonStorage(item, path + '.' + key);
+		}
+		return;
+	}
+	throw new Error('Storage contains unsupported value at ' + path);
+}
+
 const context = {
 	args: ${JSON.stringify(safeArgs)},
 	client,
 	logger: new Logger(),
+	secrets: ${safeSecrets},
+	storage: ${safeStorageJson},
 };
 
 try {
@@ -219,6 +389,10 @@ try {
 	const startMemory = Deno.memoryUsage().heapUsed;
 	
 	const result = await task.run(context);
+	if (!isPlainObject(context.storage)) {
+		throw new Error('Storage must be a JSON object');
+	}
+	assertJsonStorage(context.storage);
 	
 	const endTime = performance.now();
 	const endMemory = Deno.memoryUsage().heapUsed;
@@ -228,6 +402,7 @@ try {
 	const memoryUsed = Math.max(0, endMemory - startMemory);
 	
 	console.log('__THYME_RESULT__' + JSON.stringify(result));
+	console.log('__THYME_STORAGE__' + JSON.stringify(context.storage));
 	console.log('__THYME_STATS__' + JSON.stringify({ executionTime, memoryUsed, rpcRequestCount }));
 } catch (error) {
 	console.error('Task execution error:', error instanceof Error ? error.message : String(error));
@@ -239,6 +414,10 @@ try {
 		const proc = spawn('deno', denoFlags, {
 			stdio: ['pipe', 'pipe', 'pipe'],
 			cwd: taskDir,
+			env: {
+				...process.env,
+				...runtimeEnv,
+			},
 		})
 
 		let stdout = ''
@@ -273,11 +452,14 @@ try {
 				// Extract logs, result, and stats from stdout
 				const lines = stdout.trim().split('\n')
 				let resultLine: string | undefined
+				let storageLine: string | undefined
 				let statsLine: string | undefined
 
 				for (const line of lines) {
 					if (line.startsWith('__THYME_RESULT__')) {
 						resultLine = line.substring('__THYME_RESULT__'.length)
+					} else if (line.startsWith('__THYME_STORAGE__')) {
+						storageLine = line.substring('__THYME_STORAGE__'.length)
 					} else if (line.startsWith('__THYME_STATS__')) {
 						statsLine = line.substring('__THYME_STATS__'.length)
 					} else if (line.trim()) {
@@ -290,6 +472,9 @@ try {
 				}
 
 				const result = JSON.parse(resultLine) as TaskResult
+				const storage = storageLine
+					? normalizeStorage(JSON.parse(storageLine))
+					: safeStorage
 				const stats = statsLine
 					? JSON.parse(statsLine)
 					: {
@@ -301,6 +486,7 @@ try {
 				resolve({
 					success: true,
 					result,
+					storage,
 					logs,
 					executionTime: stats.executionTime,
 					memoryUsed: stats.memoryUsed,

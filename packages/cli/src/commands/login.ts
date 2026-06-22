@@ -1,4 +1,4 @@
-import { exec } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { platform } from 'node:os'
 import { z } from 'zod'
 import {
@@ -71,14 +71,52 @@ type AuthPollResponse =
 	| AuthPollExpiredResponse
 
 function openBrowser(url: string): void {
+	// Only ever launch well-formed http(s) URLs, and normalize through the URL
+	// parser so quotes/spaces are percent-encoded. The login URL comes from the
+	// API, so passing it to a child process unsanitized would be an injection
+	// shape — spawning with an argv array (no shell) closes that off.
+	let safeUrl: string
+	try {
+		const parsed = new URL(url)
+		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+			return
+		}
+		safeUrl = parsed.href
+	} catch {
+		return
+	}
+
 	const os = platform()
-	const cmd =
-		os === 'darwin'
-			? `open "${url}"`
-			: os === 'win32'
-				? `start "${url}"`
-				: `xdg-open "${url}"`
-	exec(cmd)
+	const launch = (
+		command: string,
+		args: string[],
+		options: Record<string, unknown> = {},
+	) => {
+		try {
+			const child = spawn(command, args, {
+				stdio: 'ignore',
+				detached: true,
+				...options,
+			})
+			child.on('error', () => {})
+			child.unref()
+		} catch {
+			// Non-fatal: the caller also prints the URL for manual opening.
+		}
+	}
+
+	if (os === 'darwin') {
+		launch('open', [safeUrl])
+	} else if (os === 'win32') {
+		// `start` is a cmd builtin; the empty "" is the (required) window title,
+		// so the URL is treated as the target instead of the title. The URL is
+		// quoted so a query-string `&` isn't parsed by cmd as a separator.
+		launch('cmd', ['/c', 'start', '""', `"${safeUrl}"`], {
+			windowsVerbatimArguments: true,
+		})
+	} else {
+		launch('xdg-open', [safeUrl])
+	}
 }
 
 function sleep(ms: number): Promise<void> {

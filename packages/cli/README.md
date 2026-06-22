@@ -31,6 +31,8 @@ thyme new my-task
 Creates:
 - `functions/my-task/index.ts` - Task definition
 - `functions/my-task/args.json` - Test arguments
+- `functions/my-task/storage.json` - Local executable storage seed
+- `functions/my-task/.env.example` - Task-local secret template
 
 ### `thyme run [task]`
 
@@ -45,9 +47,16 @@ thyme run my-task
 
 # Run with on-chain simulation
 thyme run my-task --simulate
+
+# Persist produced storage back to storage.json
+thyme run my-task --persist
 ```
 
 Requires Deno to be installed: https://deno.land/
+
+`thyme run` reads `functions/<task>/storage.json` when it exists and exposes it
+as `ctx.storage`. By default the produced storage is printed and not written
+back. Use `--persist` to overwrite `storage.json`.
 
 ### `thyme list`
 
@@ -109,7 +118,7 @@ The extracted JSON Schema is stored in the database alongside the task code, ena
 
 ## Environment Variables
 
-Create a `.env` file in your project root:
+Create a `.env` file in your project root for CLI/project defaults:
 
 ```bash
 # RPC URL for blockchain reads and simulation
@@ -131,6 +140,15 @@ THYME_API_URL=https://your-deployment.convex.cloud
   - Providing the public client in task context (`ctx.client`)
   - Running on-chain simulations with `--simulate` flag
 - `THYME_API_URL` should be set to your Convex deployment URL (found in your Convex dashboard or `.env.local` file as `VITE_CONVEX_URL`)
+
+For `thyme run`, the CLI also loads `functions/<task>/.env` after task
+selection. Task-local values override root `.env` values for that task and are
+available as `ctx.secrets`, except reserved project keys such as
+`THYME_API_URL`, `THYME_AUTH_TOKEN`, and `RPC_URL`. `SIMULATE_ACCOUNT` can be set
+in either root `.env` or `functions/<task>/.env` for `thyme run --simulate`.
+
+Task `.env` files are gitignored. Commit `functions/<task>/.env.example`
+templates instead.
 
 ## Requirements
 

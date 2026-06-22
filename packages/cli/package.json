@@ -12,14 +12,12 @@
 		"thyme": "dist/index.js"
 	},
 	"files": [
-		"dist",
-		"scripts/postinstall.js"
+		"dist"
 	],
 	"scripts": {
 		"build": "tsup",
 		"dev": "tsup --watch",
-		"postinstall": "node ./scripts/postinstall.js",
-		"test": "echo \"No tests yet\""
+		"test": "bun test"
 	},
 	"keywords": [
 		"web3",
