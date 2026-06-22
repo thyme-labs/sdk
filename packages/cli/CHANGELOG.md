@@ -1,5 +1,16 @@
 # @thyme-labs/cli
 
+## 0.4.0
+
+### Minor Changes
+
+- f4b5eea: Added secrets and storage per task
+
+### Patch Changes
+
+- Updated dependencies [f4b5eea]
+  - @thyme-labs/sdk@0.4.0
+
 ## 0.3.7
 
 ### Patch Changes
