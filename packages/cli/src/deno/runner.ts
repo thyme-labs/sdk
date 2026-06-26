@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
+import { existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import type { TaskResult } from '@thyme-labs/sdk'
 
 type JsonValue =
@@ -14,7 +15,6 @@ type JsonObject = { [key: string]: JsonValue }
 
 export interface TaskConfig {
 	memory: number // MB
-	timeout: number // seconds
 	network: boolean
 	rpcUrl?: string // RPC URL for public client
 	env?: Record<string, string> // runtime env loaded from root/task .env files
@@ -31,7 +31,9 @@ export interface RunResult {
 	rpcRequestCount?: number // number of RPC requests made
 }
 
-const STORAGE_MAX_BYTES = 64 * 1024
+// Match the production executable-storage limit (backend lib/executableStorage.ts)
+// so storage that the cloud accepts is also accepted by `thyme run` (dev/prod parity).
+const STORAGE_MAX_BYTES = 100 * 1024 * 1024
 const FORBIDDEN_STORAGE_KEYS = new Set([
 	'__proto__',
 	'constructor',
@@ -179,9 +181,11 @@ function sanitizeErrorMessage(error: string): string {
  * Run a task in Deno sandbox - similar to Gelato's w3f test and @deno/sandbox
  * Creates an isolated Deno process with controlled permissions
  *
- * Deno 2 defaults `nodeModulesDir` to "manual" when a package.json exists; we pass
- * `--node-modules-dir=auto` and allow read on the Thyme project root so tasks can
- * resolve `viem` / `@thyme-labs/sdk` from the repo `node_modules`.
+ * Runs read-only with `--node-modules-dir=manual` so Deno resolves `viem` /
+ * `@thyme-labs/sdk` from the project's existing `node_modules` without trying to
+ * write a local `node_modules/.deno` (which `auto` does, and which fails under our
+ * read-only grant). Read access is scoped to the task folder + `node_modules` +
+ * config files — NOT the whole project — so a task can't read sibling secrets.
  */
 export async function runInDeno(
 	taskPath: string,
@@ -266,12 +270,33 @@ export async function runInDeno(
 	// Add import map to redirect bare Node.js imports to node: prefix
 	denoFlags.push(`--import-map=${importMapDataUrl}`)
 
-	// Deno 2: restore npm auto behavior (vs default "manual" with package.json)
-	denoFlags.push('--node-modules-dir=auto')
+	// Resolve the project's installed node_modules READ-ONLY. Deno 2's "auto" mode
+	// reconciles/initializes a local node_modules/.deno, which needs write access we
+	// deliberately don't grant — so it fails under our read-only sandbox (the task
+	// never runs). "manual" resolves bare imports (viem, @thyme-labs/sdk) from the
+	// existing node_modules (npm- or bun-installed) read-only, while npm: specifiers
+	// resolve from Deno's global cache.
+	denoFlags.push('--node-modules-dir=manual')
 
-	// Read task sources + repo root (node_modules, package.json live here; cwd is taskDir)
+	// Grant read ONLY to what module resolution needs — the task's own folder, the
+	// project's node_modules, and its package.json / Deno config — NOT the whole
+	// project root. This keeps an untrusted or copy-pasted task from reading sibling
+	// tasks' .env, the repo .git, or other credentials and exfiltrating them over the
+	// network. (Production is tighter still: the sandbox only holds wrapper.js + the
+	// bundled task.)
 	denoFlags.push(`--allow-read=${taskDir}`)
-	denoFlags.push(`--allow-read=${absoluteProjectRoot}`)
+	denoFlags.push(`--allow-read=${join(absoluteProjectRoot, 'node_modules')}`)
+	for (const name of [
+		'package.json',
+		'deno.json',
+		'deno.jsonc',
+		'tsconfig.json',
+	]) {
+		const configPath = join(absoluteProjectRoot, name)
+		if (existsSync(configPath)) {
+			denoFlags.push(`--allow-read=${configPath}`)
+		}
+	}
 
 	// Add memory limit if specified
 	if (config.memory) {
@@ -290,7 +315,28 @@ export async function runInDeno(
 	// Similar to how Gelato's w3f test executes functions
 	const execScript = `
 import task from '${safeTaskPath}';
-import { createPublicClient, http } from 'npm:viem@2.21.54';
+// Resolve viem from the project's own node_modules (same instance the task uses),
+// so ctx.client never skews from the task's viem version. Production parity is
+// driven by the version the project pins (see \`thyme init\` scaffold).
+import { createPublicClient, http } from 'viem';
+
+// Match the production wrapper: make JSON.stringify BigInt-safe so a task that
+// serializes viem bigints behaves identically locally and in the cloud, instead
+// of throwing "Do not know how to serialize a BigInt" only under \`thyme run\`.
+const originalStringify = JSON.stringify;
+JSON.stringify = (value, replacer, space) => {
+	const toStr = (val) => typeof val === 'bigint' ? val.toString() : val;
+	// Array replacer = a key allowlist; it has no value transform, so preserve it
+	// verbatim (turning it into a function would silently drop its key filtering).
+	if (Array.isArray(replacer)) {
+		return originalStringify(value, replacer, space);
+	}
+	// Function replacer: run the user's replacer first, then make bigints safe.
+	if (typeof replacer === 'function') {
+		return originalStringify(value, (key, val) => toStr(replacer(key, val)), space);
+	}
+	return originalStringify(value, (key, val) => toStr(val), space);
+};
 
 // Logger for local development - prints directly to console
 // (In production, the logger outputs with __THYME_LOG__ prefix for capture)
@@ -326,10 +372,18 @@ const countingHttp = (url) => {
 	};
 };
 
-// Create public client for blockchain reads
-const client = createPublicClient({
-	transport: countingHttp(${safeRpcUrl}),
-});
+// Lazily create the public client on first access. With viem 2.46+, http()
+// throws at construction when no RPC URL is set, so eager creation would break a
+// task that never touches ctx.client whenever RPC_URL is unset. A getter defers
+// that: client-less tasks always run; tasks that use ctx.client without RPC_URL
+// get viem's clear "No URL provided" error. (Production always sets RPC_URL.)
+let _client;
+function getClient() {
+	if (!_client) {
+		_client = createPublicClient({ transport: countingHttp(${safeRpcUrl}) });
+	}
+	return _client;
+}
 
 function isPlainObject(value) {
 	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -377,7 +431,9 @@ function assertJsonStorage(value, path = '$') {
 
 const context = {
 	args: ${JSON.stringify(safeArgs)},
-	client,
+	get client() {
+		return getClient();
+	},
 	logger: new Logger(),
 	secrets: ${safeSecrets},
 	storage: ${safeStorageJson},

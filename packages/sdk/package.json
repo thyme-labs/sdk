@@ -1,6 +1,6 @@
 {
 	"name": "@thyme-labs/sdk",
-	"version": "0.4.0",
+	"version": "0.4.1",
 	"description": "SDK for authoring Web3 automation tasks",
 	"repository": {
 		"type": "git",
@@ -39,7 +39,7 @@
 	},
 	"dependencies": {
 		"fflate": "^0.8.2",
-		"viem": "^2.21.54",
+		"viem": "2.46.3",
 		"zod": "^3.24.1"
 	},
 	"devDependencies": {

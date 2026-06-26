@@ -16,7 +16,12 @@ export type JsonObject = { [key: string]: JsonValue }
  * Context provided to task execution
  */
 export interface ThymeContext<TArgs> {
-	/** User-provided arguments validated against schema */
+	/**
+	 * User-provided arguments, already validated **and transformed** against the
+	 * task's `schema` by `defineTask` before `run` is called (e.g. `z.address()`
+	 * is checksummed, `.default(...)` values are applied). Invalid input aborts
+	 * execution before `run` runs.
+	 */
 	args: TArgs
 	/** Viem public client for reading blockchain data */
 	client: PublicClient

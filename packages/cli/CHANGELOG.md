@@ -1,5 +1,13 @@
 # @thyme-labs/cli
 
+## 0.4.1
+
+### Patch Changes
+
+- Fix `thyme run` on Deno 2.x by resolving the project's `node_modules` read-only (`--node-modules-dir=manual`). Improve dev/prod parity: align viem to 2.46.3, make `JSON.stringify` BigInt-safe (function and array replacers), create the public client lazily, raise the local storage limit to 100MB, and warn that `--simulate` does not reproduce production execution. Harden the local sandbox so a task can only read its own folder and `node_modules` (not the whole project). Rework the schema extractor: fix nested-optional detection, comment and regex-literal handling, and `const`-reference resolution ($/type-annotation edge cases), and model `enum`/`union`/`literal`/`tuple`/`record`/`bigint`/`coerce`/`default`; warn when extraction fails. Update the default API URL and scaffold dependency versions.
+- Updated dependencies
+  - @thyme-labs/sdk@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes

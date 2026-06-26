@@ -97,8 +97,7 @@ describe('auth token helpers', () => {
 })
 
 describe('API URL resolution', () => {
-	const DEFAULT_URL =
-		'https://convex-backend-production-f25e.up.railway.app/http'
+	const DEFAULT_URL = 'https://functions.thymelabs.io/http'
 
 	test('falls back to the built-in default when nothing is configured', () => {
 		expect(config.getApiUrl()).toBe(DEFAULT_URL)

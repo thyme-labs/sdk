@@ -328,7 +328,7 @@ export async function loginCommand(options: LoginOptions = {}) {
 	let apiUrl = resolveApiUrl()
 	if (!apiUrl) {
 		error(
-			'THYME_API_URL is not set. Please set it to your Convex deployment URL (e.g., https://your-deployment.convex.cloud)',
+			'THYME_API_URL is not set. Please set it to your Thyme Cloud API URL (e.g., https://functions.thymelabs.io/http)',
 		)
 		process.exit(1)
 	}

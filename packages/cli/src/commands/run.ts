@@ -116,7 +116,6 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	// Use default config
 	const config: TaskConfig = {
 		memory: 128,
-		timeout: 30,
 		network: true,
 		rpcUrl: runtimeEnv.RPC_URL ?? getEnv('RPC_URL'),
 		env: runtimeEnv,
@@ -302,6 +301,17 @@ async function simulateCalls(
 			error(`SIMULATE_ACCOUNT is not a valid Ethereum address: ${account}`)
 			return
 		}
+
+		// Local simulation is a best-effort preview, NOT a faithful replay of the
+		// cloud run. Production submits these calls as a single atomic ERC-4337 /
+		// EIP-7702 batch from the profile's smart-account address (sponsored or
+		// self-paid gas); here they are simulated from SIMULATE_ACCOUNT. So
+		// msg.sender, atomicity, and the gas/payer context all differ.
+		warn(
+			'Note: simulation runs from SIMULATE_ACCOUNT and does not reproduce production execution — ' +
+				'in the cloud the calls run atomically from your profile smart-account (different msg.sender, ' +
+				'atomicity, and gas/sponsorship). Access-controlled or inter-dependent calls may behave differently on-chain.',
+		)
 
 		// Simulate all calls at once using viem's simulateCalls
 		const simulationSpinner = clack.spinner()

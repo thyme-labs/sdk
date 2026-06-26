@@ -29,3 +29,10 @@ npm-debug.log*
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
+
+# Coverage + stray Deno lockfile from `thyme run` test executions
+coverage/
+deno.lock
+
+# Local security audit (do not publish — discloses open findings)
+AUDIT-REPORT.md

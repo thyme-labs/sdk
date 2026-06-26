@@ -53,13 +53,13 @@ export async function initCommand(projectName?: string) {
 				dev: 'thyme run',
 			},
 			dependencies: {
-				'@thyme-labs/sdk': '^0.3.2',
-				viem: '^2.21.54',
-				zod: '^3.24.1',
+				'@thyme-labs/sdk': '0.4.0',
+				viem: '2.46.3',
+				zod: '3.24.1',
 			},
 			devDependencies: {
-				'@thyme-labs/cli': '^0.3.2',
-				typescript: '^5.7.2',
+				'@thyme-labs/cli': '0.4.0',
+				typescript: '5.7.2',
 			},
 		}
 
@@ -100,8 +100,8 @@ SIMULATE_ACCOUNT=0x742d35Cc6634C0532925a3b844Bc454e4438f44e
 # Cloud authentication (set by \`thyme login\`)
 THYME_AUTH_TOKEN=
 
-# Cloud API URL (required - your Convex deployment URL)
-# Example: https://your-deployment.convex.cloud
+# Cloud API URL (optional - defaults to https://functions.thymelabs.io/http)
+# Set this only to target a different Thyme deployment.
 THYME_API_URL=
 `
 

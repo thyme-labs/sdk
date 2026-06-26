@@ -1,0 +1,5 @@
+[test]
+# SDK coverage is enforced at 100%. `bun test` fails if any line/function
+# drops below full coverage — new code must ship with tests.
+coverage = true
+coverageThreshold = 1.0

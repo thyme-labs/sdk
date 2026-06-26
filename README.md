@@ -26,10 +26,15 @@ thyme run my-task
 # Simulate on-chain
 thyme run my-task --simulate
 
-# Deploy to cloud
+# Authenticate, then upload your code to the cloud
 thyme login
 thyme upload my-task
 ```
+
+After `thyme upload`, your code appears in **Console → Functions**. Upload only puts the
+code in the cloud — it does not schedule anything. Triggers, profile, gas mode, args, and
+secret bindings are configured in the Thyme Console when you assemble an executable from
+the uploaded function.
 
 ## Development
 

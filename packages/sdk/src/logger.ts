@@ -31,8 +31,12 @@ export interface LogEntry {
  * ```
  */
 export class Logger {
-	private logs: LogEntry[] = []
+	private logs: LogEntry[]
 	private static readonly LOG_PREFIX = '__THYME_LOG__'
+
+	constructor() {
+		this.logs = []
+	}
 
 	/**
 	 * Log an info message

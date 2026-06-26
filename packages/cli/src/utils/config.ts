@@ -62,8 +62,7 @@ export function clearAuthToken(): void {
 	writeConfig(config)
 }
 
-const DEFAULT_API_URL =
-	'https://convex-backend-production-f25e.up.railway.app/http'
+const DEFAULT_API_URL = 'https://functions.thymelabs.io/http'
 
 export function getApiUrl(): string {
 	// 1. Environment variable or .env file (highest priority, 12-factor style)

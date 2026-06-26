@@ -64,11 +64,11 @@ export async function uploadCommand(
 		process.exit(1)
 	}
 
-	// Get API URL (Convex deployment URL)
+	// Get API URL (Thyme Cloud API URL)
 	const apiUrl = getApiUrl()
 	if (!apiUrl) {
 		error(
-			'THYME_API_URL is not set. Please set it to your Convex deployment URL in .env',
+			'THYME_API_URL is not set. Please set it to your Thyme Cloud API URL in .env',
 		)
 		process.exit(1)
 	}
@@ -252,6 +252,10 @@ export async function uploadCommand(
 
 		// Extract schema from source code
 		const schema = extractSchemaFromTask(source)
+		// Surface a silent extraction failure: the task declares a `schema:` but we
+		// couldn't parse it, so the dashboard won't be able to build an args form.
+		const schemaDeclared = /\bschema\s*:/.test(source)
+		const schemaExtractionFailed = schemaDeclared && !schema
 
 		spinner.message('Compressing files...')
 
@@ -259,6 +263,17 @@ export async function uploadCommand(
 		const { zipBuffer, checksum } = compressTask(source, bundle)
 
 		spinner.stop('Bundle ready')
+
+		if (schemaExtractionFailed) {
+			clack.log.warn(
+				pc.yellow(
+					'Could not extract an argument schema from this task. The dashboard ' +
+						'will not be able to generate an input form. If your schema is defined ' +
+						'inline as `schema: z.object({ ... })` (or a `const` referencing one), ' +
+						'check it parses; otherwise this is expected.',
+				),
+			)
+		}
 
 		// Summary before upload
 		clack.log.message('')

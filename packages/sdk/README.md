@@ -2,6 +2,11 @@
 
 SDK for authoring Web3 automation tasks with Thyme.
 
+You author a **task** as a TypeScript module that exports a `defineTask({ schema, run })`
+default. The task's `run(ctx)` reads on-chain and off-chain state and returns either the
+calls to execute or a reason to skip — you never sign or send transactions yourself. The
+Thyme executor submits the calls when the task runs in the cloud.
+
 ## Installation
 
 ```bash
@@ -10,7 +15,7 @@ npm install @thyme-labs/sdk zod viem
 
 ## Usage
 
-Create a task with embedded schema:
+Create a task with an embedded schema:
 
 ```typescript
 import { defineTask, z } from '@thyme-labs/sdk'
@@ -37,23 +42,23 @@ export default defineTask({
   // Define your arguments schema with type-safe Ethereum addresses
   schema: z.object({
     oracleAddress: z.address(), // Validates and returns viem's Address type
-    threshold: z.number().min(0),
+    threshold: z.coerce.bigint().positive(), // coerce: args arrive as JSON strings
   }),
 
   // Main execution logic
   async run(ctx) {
     const { oracleAddress, threshold } = ctx.args
-    
-    // Read from blockchain using the public client
+
+    // Read from the blockchain using the public client
     const lastPrice = await ctx.client.readContract({
       address: oracleAddress,
       abi,
       functionName: 'getPrice',
     })
-    
+
     // Your logic here
     const price = await fetchPrice()
-    
+
     if (price > threshold && price !== lastPrice) {
       return {
         canExec: true,
@@ -64,35 +69,31 @@ export default defineTask({
             functionName: 'updatePrice',
             args: [price],
           }),
-        }]
+        }],
       }
     }
-    
+
     return {
       canExec: false,
-      message: 'Price below threshold or unchanged'
+      message: 'Price below threshold or unchanged',
     }
-  },
-
-  // Optional: Handle successful execution
-  async onSuccess(ctx, txHashes) {
-    console.log('Executed:', txHashes)
-  },
-
-  // Optional: Handle failed execution
-  async onFail(ctx, error) {
-    console.error('Failed:', error.message)
   },
 })
 ```
 
+A task definition is exactly `{ schema, run }`. `run(ctx)` returns either
+`{ canExec: true, calls }` (the executor submits the calls) or
+`{ canExec: false, message }` (skip, with a reason).
+
 ## Schema Validation
 
-The SDK provides an extended Zod instance with Ethereum-specific validators:
+The SDK provides an extended Zod instance with Ethereum-specific validators.
 
 ### `z.address()`
 
-Validates an Ethereum address and returns viem's `Address` type:
+Validates an Ethereum address and returns viem's `Address` type (checksummed). It
+accepts checksummed and all-lowercase addresses and rejects all-uppercase (EIP-55),
+missing `0x`, wrong length, and non-hex input.
 
 ```typescript
 import { defineTask, z } from '@thyme-labs/sdk'
@@ -108,9 +109,9 @@ export default defineTask({
       calls: [{
         to: ctx.args.targetAddress,
         data: '0x',
-      }]
+      }],
     }
-  }
+  },
 })
 ```
 
@@ -119,15 +120,25 @@ You can also use standard Zod validators:
 ```typescript
 schema: z.object({
   address: z.address(),
-  amount: z.bigint().positive(),
+  amount: z.coerce.bigint().positive(),
   enabled: z.boolean(),
   metadata: z.string().optional(),
 })
 ```
 
+On upload, the schema is converted to JSON Schema so the Console can render an arguments
+form.
+
+> **BigInt arguments:** task arguments are transported as JSON (which has no BigInt type),
+> so a `uint256`/BigInt argument is delivered as a string. Use `z.coerce.bigint()` (not
+> `z.bigint()`) so the string is parsed into a real `bigint` before your `run` executes;
+> `ctx.args` is validated and transformed against your schema, so `ctx.args.amount` is a
+> `bigint` you can do arithmetic with.
+
 ## Public Client
 
-The context includes a viem `PublicClient` for reading blockchain data:
+The context includes a viem `PublicClient` for **reading** blockchain data. It has no
+wallet or signer — you return `Call`s and the Thyme executor submits them.
 
 ```typescript
 import { defineTask, z } from '@thyme-labs/sdk'
@@ -135,9 +146,9 @@ import { defineTask, z } from '@thyme-labs/sdk'
 export default defineTask({
   schema: z.object({
     tokenAddress: z.address(),
-    threshold: z.bigint(),
+    threshold: z.coerce.bigint(),
   }),
-  
+
   async run(ctx) {
     // Read contract state
     const totalSupply = await ctx.client.readContract({
@@ -151,38 +162,39 @@ export default defineTask({
       }],
       functionName: 'totalSupply',
     })
-    
+
     // Get block data
     const blockNumber = await ctx.client.getBlockNumber()
     const block = await ctx.client.getBlock({ blockNumber })
-    
+
     // Get balance
     const balance = await ctx.client.getBalance({
       address: ctx.args.tokenAddress,
     })
-    
+
     if (totalSupply > ctx.args.threshold) {
       return {
         canExec: true,
-        calls: [...]
+        calls: [/* ... */],
       }
     }
-    
+
     return {
       canExec: false,
-      message: 'Threshold not met'
+      message: 'Threshold not met',
     }
-  }
+  },
 })
 ```
 
-The client is configured using the `RPC_URL` environment variable in your root
-`.env` file, or a task-local `functions/<task>/.env` file when running locally.
-Task-local values override root values for that task.
+Locally, the client is configured from the `RPC_URL` environment variable in your root
+`.env`, or a task-local `functions/<task>/.env` (task-local values override root). In
+the cloud, the chain is the one bound to the executable's profile.
 
-## Executable Secrets
+## Task Secrets
 
-Use `ctx.secrets` to read executable secrets:
+Use `ctx.secrets` to read secrets. There is no explicit declaration API — a secret is
+declared implicitly by reading it.
 
 ```typescript
 export default defineTask({
@@ -193,18 +205,19 @@ export default defineTask({
 
     // ...
     return { canExec: false, message: 'Not ready' }
-  }
+  },
 })
 ```
 
-For local runs, put task-specific secrets in `functions/<task>/.env`. Cloud
-project config keys such as `THYME_API_URL`, `THYME_AUTH_TOKEN`, and `RPC_URL`
-are not exposed through `ctx.secrets`.
+For local runs, put task-specific secrets in `functions/<task>/.env`. The reserved keys
+`THYME_API_URL`, `THYME_AUTH_TOKEN`, and `RPC_URL` are not exposed through
+`ctx.secrets`. In the cloud, secrets are bound to the executable in the Console and
+injected at runtime.
 
-## Executable Storage
+## Task Storage
 
-Use `ctx.storage` for small JSON state that should persist across executions of
-the same executable:
+Use `ctx.storage` for small JSON state that persists across executions of the same
+executable. Mutate it in place.
 
 ```typescript
 export default defineTask({
@@ -215,25 +228,34 @@ export default defineTask({
     ctx.storage.lastCheckedAt = Date.now()
 
     return { canExec: false, message: 'State updated' }
-  }
+  },
 })
 ```
 
-Storage must be a JSON object. Do not put secrets in storage; use
-`ctx.secrets` for credentials. Local runs read `functions/<task>/storage.json`
-when it exists. By default `thyme run` prints the produced storage without
-overwriting the file; pass `--persist` to write it back.
+`ctx.storage` must be a plain JSON object and is capped at 64KB. Do not put secrets in
+storage; use `ctx.secrets` for credentials. Local runs read
+`functions/<task>/storage.json` when it exists. By default `thyme run` prints the
+produced storage without overwriting the file; pass `--persist` to write it back.
 
 ## Encoding Function Calls
 
-Use viem's `encodeFunctionData` to encode function calls:
+Use viem's `encodeFunctionData` to build the `data` for a `Call`:
 
 ```typescript
 import { defineTask, z } from '@thyme-labs/sdk'
 import { encodeFunctionData } from 'viem'
 
 const abi = [
-  'function transfer(address to, uint256 amount) returns (bool)',
+  {
+    name: 'transfer',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ type: 'bool' }],
+  },
 ] as const
 
 export default defineTask({
@@ -241,7 +263,7 @@ export default defineTask({
     token: z.address(),
     recipient: z.address(),
   }),
-  
+
   async run(ctx) {
     return {
       canExec: true,
@@ -252,9 +274,9 @@ export default defineTask({
           functionName: 'transfer',
           args: [ctx.args.recipient, 1000n],
         }),
-      }]
+      }],
     }
-  }
+  },
 })
 ```
 
@@ -264,14 +286,16 @@ Viem's `encodeFunctionData` provides full type safety and validation.
 
 ### `defineTask(definition)`
 
-Define a Web3 automation task.
+Define a Web3 automation task. This is an identity passthrough — its only job is generic
+inference so `ctx.args` is typed from your schema.
 
 #### Parameters
 
-- `definition.schema` - Zod schema for validating task arguments
-- `definition.run` - Main execution function that returns whether to execute and what calls to make
-- `definition.onSuccess` - Optional callback on successful execution
-- `definition.onFail` - Optional callback on failed execution
+- `definition.schema` — Zod schema for validating task arguments.
+- `definition.run` — execution function `(ctx) => Promise<TaskResult>` that returns
+  whether to execute and which calls to make.
+
+A definition has exactly these two fields.
 
 #### Returns
 
@@ -282,23 +306,33 @@ The task definition (for type inference).
 ### `ThymeContext<TArgs>`
 
 Context provided to task execution:
-- `args` - User-provided arguments validated against schema
-- `client` - Viem public client for reading blockchain data
-- `logger` - Logger for task output
-- `secrets` - Executable secrets available to the task
-- `storage` - Persistent JSON storage scoped to this executable
+
+- `args` — user-provided arguments, validated against your schema and typed accordingly.
+- `client` — viem `PublicClient` for reading blockchain data (reads only).
+- `logger` — logger for task output (`info`/`warn`/`error`); captured to the dashboard.
+- `secrets` — `Record<string, string>` of secrets available to the task.
+- `storage` — persistent `JsonObject` scoped to this executable.
 
 ### `TaskResult`
 
 Result from task execution:
-- `{ canExec: true, calls: Call[] }` - Execute these calls
-- `{ canExec: false, message: string }` - Don't execute, with reason
+
+- `{ canExec: true, calls: Call[] }` — execute these calls.
+- `{ canExec: false, message: string }` — don't execute, with a reason.
 
 ### `Call`
 
 A call to execute on-chain:
-- `to` - Target contract address
-- `data` - Encoded function call data
+
+- `to` — target contract address (`Address`).
+- `data` — encoded function call data (`Hex`).
+
+## Advanced
+
+The package also exports `compressTask` / `decompressTask` (and the related
+`CompressResult` / `DecompressResult` types). These power the upload pipeline (zip +
+sha256 checksum, with zip-bomb guards on decompress) and are internal — task authors
+don't need them.
 
 ## License
 
