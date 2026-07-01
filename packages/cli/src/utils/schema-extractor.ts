@@ -111,7 +111,7 @@ function stripComments(code: string): string {
 		}
 
 		out += ch
-		if (!/\s/.test(ch)) prevSignificant = ch
+		if (ch && !/\s/.test(ch)) prevSignificant = ch
 	}
 
 	return out

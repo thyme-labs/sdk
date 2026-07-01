@@ -1,7 +1,15 @@
 import { existsSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import type { Address } from 'viem'
-import { createPublicClient, formatEther, http, isAddress } from 'viem'
+import {
+	BaseError,
+	createPublicClient,
+	formatEther,
+	http,
+	isAddress,
+	MethodNotFoundRpcError,
+	MethodNotSupportedRpcError,
+} from 'viem'
 import { checkDeno, runInDeno, type TaskConfig } from '../deno/runner'
 import {
 	type EnvMap,
@@ -333,13 +341,31 @@ async function simulateCalls(
 				})),
 			})
 			results = batchResult.results
-		} catch {
-			// eth_simulateV1 not supported, fall back to individual eth_call
-			simulationSpinner.stop('Batch simulation not supported')
-			log('')
-			warn(
-				'RPC does not support eth_simulateV1 (batch simulation). Falling back to individual calls.',
-			)
+		} catch (batchError) {
+			// Only downgrade to the weaker per-call path when the RPC genuinely
+			// lacks eth_simulateV1. Any other error — a reverted call surfaced as an
+			// exception, invalid params (e.g. a strict fee check), or a transient
+			// node failure — must not be silently relabeled "unsupported": doing so
+			// hid real problems behind a misleading message and produced a
+			// false-green preview.
+			if (isMethodUnsupportedError(batchError)) {
+				simulationSpinner.stop('Batch simulation not supported')
+				log('')
+				warn(
+					'RPC does not support eth_simulateV1 (batch simulation). Falling back to individual calls.',
+				)
+			} else {
+				simulationSpinner.stop('Batch simulation failed')
+				log('')
+				warn(
+					`eth_simulateV1 failed: ${
+						batchError instanceof Error
+							? batchError.message
+							: String(batchError)
+					}`,
+				)
+				warn('Falling back to individual calls (best-effort preview).')
+			}
 			warn(
 				pc.yellow(
 					'⚠️  Note: Individual simulation cannot detect failures in dependent transactions.',
@@ -463,4 +489,44 @@ async function simulateCalls(
 		log('')
 		error(err instanceof Error ? err.message : String(err))
 	}
+}
+
+/**
+ * Distinguish "the RPC lacks eth_simulateV1" from every other simulation error.
+ *
+ * The batch path should fall back to per-call eth_call ONLY when the method is
+ * genuinely unavailable on the node. Bor/Geth return JSON-RPC -32601
+ * ("method not found") in that case, which viem surfaces as
+ * MethodNotFoundRpcError; some nodes use MethodNotSupportedRpcError instead.
+ * Everything else — a revert raised as an exception, invalid params (e.g. a
+ * strict fee validation), or a transient node error — is a real signal that
+ * must be surfaced, not masked behind "unsupported".
+ */
+export function isMethodUnsupportedError(err: unknown): boolean {
+	if (err instanceof BaseError) {
+		const match = err.walk(
+			(e) =>
+				e instanceof MethodNotFoundRpcError ||
+				e instanceof MethodNotSupportedRpcError ||
+				(e as { code?: number }).code === -32601,
+		)
+		if (match) return true
+	}
+
+	const message = (
+		err instanceof Error ? err.message : String(err ?? '')
+	).toLowerCase()
+	return (
+		message.includes('method not found') ||
+		message.includes('method not supported') ||
+		message.includes('method not available') ||
+		message.includes('method does not exist') ||
+		message.includes('unsupported method') ||
+		(message.includes('eth_simulatev1') &&
+			(message.includes('not exist') ||
+				message.includes('not available') ||
+				message.includes('not support') ||
+				message.includes('unsupported') ||
+				message.includes('unknown')))
+	)
 }
