@@ -180,4 +180,106 @@ describe('defineTask', () => {
 			/Invalid task arguments/,
 		)
 	})
+
+	describe('lifecycle callbacks', () => {
+		test('callbacks absent from the definition stay absent on the returned task', () => {
+			const def = defineTask({
+				schema: z.object({ n: z.number() }),
+				async run() {
+					return { canExec: true as const, calls: [] }
+				},
+			})
+			expect(def.onSuccess).toBeUndefined()
+			expect(def.onSkip).toBeUndefined()
+			expect(def.onError).toBeUndefined()
+			expect(def.onFail).toBeUndefined()
+			expect('onSuccess' in def).toBe(false)
+			expect('onSkip' in def).toBe(false)
+			expect('onError' in def).toBe(false)
+			expect('onFail' in def).toBe(false)
+		})
+
+		test('each defined callback passes through and receives its payload', async () => {
+			const seen: Record<string, unknown> = {}
+			const def = defineTask({
+				schema: z.object({ n: z.number() }),
+				async run() {
+					return { canExec: true as const, calls: [] }
+				},
+				async onSuccess(_c, tx) {
+					seen.onSuccess = tx
+				},
+				async onSkip(_c, info) {
+					seen.onSkip = info
+				},
+				async onError(_c, info) {
+					seen.onError = info
+				},
+				async onFail(_c, info) {
+					seen.onFail = info
+				},
+			})
+
+			const successPayload = {
+				txHash: '0xabc',
+				blockNumber: 1,
+				gasUsed: '21000',
+				gasCostWei: '1',
+			}
+			await def.onSuccess?.(ctx({ n: 1 }), successPayload)
+			await def.onSkip?.(ctx({ n: 1 }), { message: 'skipped' })
+			await def.onError?.(ctx({ n: 1 }), { error: 'boom' })
+			const failPayload = { stage: 'timeout' as const, reason: 'no receipt' }
+			await def.onFail?.(ctx({ n: 1 }), failPayload)
+
+			expect(seen.onSuccess).toEqual(successPayload)
+			expect(seen.onSkip).toEqual({ message: 'skipped' })
+			expect(seen.onError).toEqual({ error: 'boom' })
+			expect(seen.onFail).toEqual(failPayload)
+		})
+
+		test('validates and transforms ctx.args in a callback, same as run', async () => {
+			let seenTarget: string | undefined
+			const def = defineTask({
+				schema: z.object({ target: z.address() }),
+				async run() {
+					return { canExec: true as const, calls: [] }
+				},
+				async onSuccess(c) {
+					seenTarget = c.args.target
+				},
+			})
+
+			await def.onSuccess?.(ctx({ target: VITALIK.toLowerCase() }), {
+				txHash: '0xabc',
+				blockNumber: 1,
+				gasUsed: '21000',
+				gasCostWei: '1',
+			})
+			// Same checksum transform run's ctx.args gets.
+			expect(seenTarget).toBe(VITALIK)
+		})
+
+		test('a callback rejects invalid args before its body runs', async () => {
+			let ran = false
+			const def = defineTask({
+				schema: z.object({ n: z.number() }),
+				async run() {
+					return { canExec: true as const, calls: [] }
+				},
+				async onFail() {
+					ran = true
+				},
+			})
+
+			await expect(
+				def.onFail?.(
+					// biome-ignore lint/suspicious/noExplicitAny: deliberately invalid input
+					ctx({ n: 'not-a-number' } as any),
+					{ stage: 'submit', reason: 'rejected' },
+				),
+			).rejects.toThrow(/Invalid task arguments/)
+			expect(ran).toBe(false)
+		})
+	})
 })

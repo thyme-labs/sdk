@@ -7,9 +7,13 @@ export { zodExtended as z } from './schema'
 export { defineTask } from './task'
 export type {
 	Call,
+	ErrorPayload,
+	FailPayload,
 	FailResult,
 	JsonObject,
 	JsonValue,
+	SkipPayload,
+	SuccessPayload,
 	SuccessResult,
 	TaskDefinition,
 	TaskResult,

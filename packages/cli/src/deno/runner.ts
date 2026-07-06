@@ -29,6 +29,16 @@ export interface RunResult {
 	executionTime?: number // milliseconds
 	memoryUsed?: number // bytes
 	rpcRequestCount?: number // number of RPC requests made
+	/** Names of lifecycle callbacks (`onSuccess`/`onSkip`/`onError`/`onFail`) the task defines. */
+	definedCallbacks?: string[]
+}
+
+/** The four optional lifecycle callback names a task definition may export. */
+export type CallbackName = 'onSuccess' | 'onSkip' | 'onError' | 'onFail'
+
+export interface CallbackInvocation {
+	name: CallbackName
+	payload: unknown
 }
 
 // Match the production executable-storage limit (backend lib/executableStorage.ts)
@@ -177,9 +187,43 @@ function sanitizeErrorMessage(error: string): string {
 	return sanitized.trim()
 }
 
+// Node.js built-in modules that need to be mapped to node: prefix for Deno
+const NODE_BUILTINS = [
+	'assert',
+	'buffer',
+	'child_process',
+	'cluster',
+	'crypto',
+	'dgram',
+	'dns',
+	'events',
+	'fs',
+	'http',
+	'http2',
+	'https',
+	'net',
+	'os',
+	'path',
+	'perf_hooks',
+	'process',
+	'querystring',
+	'readline',
+	'stream',
+	'string_decoder',
+	'timers',
+	'tls',
+	'tty',
+	'url',
+	'util',
+	'v8',
+	'vm',
+	'zlib',
+]
+
 /**
- * Run a task in Deno sandbox - similar to Gelato's w3f test and @deno/sandbox
- * Creates an isolated Deno process with controlled permissions
+ * Build the Deno permission/launch flags shared by every local execution
+ * (`run` and callback re-entries alike) — kept in one place so the two paths
+ * can never drift apart on what they're allowed to touch.
  *
  * Runs read-only with `--node-modules-dir=manual` so Deno resolves `viem` /
  * `@thyme-labs/sdk` from the project's existing `node_modules` without trying to
@@ -187,95 +231,21 @@ function sanitizeErrorMessage(error: string): string {
  * read-only grant). Read access is scoped to the task folder + `node_modules` +
  * config files — NOT the whole project — so a task can't read sibling secrets.
  */
-export async function runInDeno(
-	taskPath: string,
-	args: unknown,
+function buildDenoFlags(
+	taskDir: string,
+	absoluteProjectRoot: string,
 	config: TaskConfig,
-	projectRoot: string,
-	storage: unknown = {},
-): Promise<RunResult> {
-	const taskDir = dirname(resolve(taskPath))
-	const absoluteTaskPath = resolve(taskPath)
-	const absoluteProjectRoot = resolve(projectRoot)
-
-	// Escape path for safe JavaScript string interpolation
-	const safeTaskPath = escapeJsString(absoluteTaskPath)
-
-	// Sanitize args to prevent prototype pollution
-	const safeArgs = sanitizeArgs(args)
-	let safeStorage: JsonObject
-	try {
-		safeStorage = normalizeStorage(storage)
-	} catch (err) {
-		return {
-			success: false,
-			logs: [],
-			error: sanitizeErrorMessage(
-				err instanceof Error ? err.message : String(err),
-			),
-		}
-	}
-
-	const runtimeEnv = config.env ?? {}
-	const safeSecrets = JSON.stringify(buildSecrets(runtimeEnv))
-	const safeStorageJson = JSON.stringify(safeStorage)
-
-	// Safely serialize RPC URL
-	const rpcUrl = config.rpcUrl ?? runtimeEnv.RPC_URL
-	const safeRpcUrl = rpcUrl ? JSON.stringify(rpcUrl) : 'undefined'
-
-	// Node.js built-in modules that need to be mapped to node: prefix for Deno
-	const nodeBuiltins = [
-		'assert',
-		'buffer',
-		'child_process',
-		'cluster',
-		'crypto',
-		'dgram',
-		'dns',
-		'events',
-		'fs',
-		'http',
-		'http2',
-		'https',
-		'net',
-		'os',
-		'path',
-		'perf_hooks',
-		'process',
-		'querystring',
-		'readline',
-		'stream',
-		'string_decoder',
-		'timers',
-		'tls',
-		'tty',
-		'url',
-		'util',
-		'v8',
-		'vm',
-		'zlib',
-	]
-
+): string[] {
 	// Create import map to redirect bare Node.js imports to node: prefix
 	const importMap: Record<string, string> = {}
-	for (const name of nodeBuiltins) {
+	for (const name of NODE_BUILTINS) {
 		importMap[name] = `node:${name}`
 	}
 	const importMapJson = JSON.stringify({ imports: importMap })
 	const importMapDataUrl = `data:application/json,${encodeURIComponent(importMapJson)}`
 
 	const denoFlags = ['run', '--no-prompt']
-
-	// Add import map to redirect bare Node.js imports to node: prefix
 	denoFlags.push(`--import-map=${importMapDataUrl}`)
-
-	// Resolve the project's installed node_modules READ-ONLY. Deno 2's "auto" mode
-	// reconciles/initializes a local node_modules/.deno, which needs write access we
-	// deliberately don't grant — so it fails under our read-only sandbox (the task
-	// never runs). "manual" resolves bare imports (viem, @thyme-labs/sdk) from the
-	// existing node_modules (npm- or bun-installed) read-only, while npm: specifiers
-	// resolve from Deno's global cache.
 	denoFlags.push('--node-modules-dir=manual')
 
 	// Grant read ONLY to what module resolution needs — the task's own folder, the
@@ -311,9 +281,24 @@ export async function runInDeno(
 	// Execute inline wrapper via stdin (similar to Gelato's approach)
 	denoFlags.push('-')
 
-	// Execution wrapper that loads and runs the task
-	// Similar to how Gelato's w3f test executes functions
-	const execScript = `
+	return denoFlags
+}
+
+/**
+ * Build the JS preamble shared by every local execution: imports the task,
+ * patches `JSON.stringify` to be BigInt-safe, defines the local `Logger` /
+ * storage-validation helpers, and constructs `context` (the `ctx` a task's
+ * `run` and every callback receive). Factored out so the run phase and the
+ * callback-simulation phase can never build `ctx` differently by accident.
+ */
+function buildContextPreamble(
+	safeTaskPath: string,
+	safeArgsJson: string,
+	safeSecretsJson: string,
+	safeStorageJson: string,
+	safeRpcUrl: string,
+): string {
+	return `
 import task from '${safeTaskPath}';
 // Resolve viem from the project's own node_modules (same instance the task uses),
 // so ctx.client never skews from the task's viem version. Production parity is
@@ -344,11 +329,11 @@ class Logger {
 	info(message) {
 		console.log('[INFO]', message);
 	}
-	
+
 	warn(message) {
 		console.log('[WARN]', message);
 	}
-	
+
 	error(message) {
 		console.log('[ERROR]', message);
 	}
@@ -430,37 +415,131 @@ function assertJsonStorage(value, path = '$') {
 }
 
 const context = {
-	args: ${JSON.stringify(safeArgs)},
+	args: ${safeArgsJson},
 	get client() {
 		return getClient();
 	},
 	logger: new Logger(),
-	secrets: ${safeSecrets},
+	secrets: ${safeSecretsJson},
 	storage: ${safeStorageJson},
 };
+`
+}
+
+/**
+ * Run a task in Deno sandbox - similar to Gelato's w3f test and @deno/sandbox
+ * Creates an isolated Deno process with controlled permissions.
+ *
+ * Also runs the task's `onSkip`/`onError` callbacks inline when defined, exactly
+ * as the production wrapper does (they're known synchronously — no on-chain
+ * result needed). `onSuccess`/`onFail` need a real submission outcome, which
+ * `thyme run` never produces; use `runCallbackInDeno` with a fabricated payload
+ * (`--simulate-callbacks`) to exercise those locally.
+ */
+export async function runInDeno(
+	taskPath: string,
+	args: unknown,
+	config: TaskConfig,
+	projectRoot: string,
+	storage: unknown = {},
+): Promise<RunResult> {
+	const taskDir = dirname(resolve(taskPath))
+	const absoluteTaskPath = resolve(taskPath)
+	const absoluteProjectRoot = resolve(projectRoot)
+
+	// Escape path for safe JavaScript string interpolation
+	const safeTaskPath = escapeJsString(absoluteTaskPath)
+
+	// Sanitize args to prevent prototype pollution
+	const safeArgs = sanitizeArgs(args)
+	let safeStorage: JsonObject
+	try {
+		safeStorage = normalizeStorage(storage)
+	} catch (err) {
+		return {
+			success: false,
+			logs: [],
+			error: sanitizeErrorMessage(
+				err instanceof Error ? err.message : String(err),
+			),
+		}
+	}
+
+	const runtimeEnv = config.env ?? {}
+	const safeSecrets = JSON.stringify(buildSecrets(runtimeEnv))
+	const safeStorageJson = JSON.stringify(safeStorage)
+
+	// Safely serialize RPC URL
+	const rpcUrl = config.rpcUrl ?? runtimeEnv.RPC_URL
+	const safeRpcUrl = rpcUrl ? JSON.stringify(rpcUrl) : 'undefined'
+
+	const denoFlags = buildDenoFlags(taskDir, absoluteProjectRoot, config)
+
+	const execScript = `${buildContextPreamble(
+		safeTaskPath,
+		JSON.stringify(safeArgs),
+		safeSecrets,
+		safeStorageJson,
+		safeRpcUrl,
+	)}
+// Runtime probe of which lifecycle callbacks this task defines. Emitted before
+// \`run\` so it survives the error path too — matches the production wrapper.
+const definedCallbacks = ['onSuccess', 'onSkip', 'onError', 'onFail'].filter(
+	(name) => typeof task[name] === 'function',
+);
+console.log('__THYME_CALLBACKS__' + JSON.stringify(definedCallbacks));
 
 try {
 	// Track execution time and memory
 	const startTime = performance.now();
 	const startMemory = Deno.memoryUsage().heapUsed;
-	
+
 	const result = await task.run(context);
 	if (!isPlainObject(context.storage)) {
 		throw new Error('Storage must be a JSON object');
 	}
 	assertJsonStorage(context.storage);
-	
+
+	if (!result.canExec && typeof task.onSkip === 'function') {
+		try {
+			await task.onSkip(context, { message: result.message ?? '' });
+		} catch (callbackError) {
+			console.log(
+				'[ERROR]',
+				'onSkip callback threw:',
+				callbackError instanceof Error ? callbackError.message : String(callbackError),
+			);
+		}
+		if (!isPlainObject(context.storage)) {
+			throw new Error('Storage must be a JSON object');
+		}
+		assertJsonStorage(context.storage);
+	}
+
 	const endTime = performance.now();
 	const endMemory = Deno.memoryUsage().heapUsed;
-	
+
 	const executionTime = endTime - startTime;
 	// Ensure memory measurement is non-negative (GC can cause negative values)
 	const memoryUsed = Math.max(0, endMemory - startMemory);
-	
+
 	console.log('__THYME_RESULT__' + JSON.stringify(result));
 	console.log('__THYME_STORAGE__' + JSON.stringify(context.storage));
 	console.log('__THYME_STATS__' + JSON.stringify({ executionTime, memoryUsed, rpcRequestCount }));
 } catch (error) {
+	if (typeof task.onError === 'function') {
+		try {
+			await task.onError(context, {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		} catch (callbackError) {
+			console.log(
+				'[ERROR]',
+				'onError callback threw:',
+				callbackError instanceof Error ? callbackError.message : String(callbackError),
+			);
+		}
+	}
 	console.error('Task execution error:', error instanceof Error ? error.message : String(error));
 	Deno.exit(1);
 }
@@ -494,6 +573,14 @@ try {
 
 		proc.on('close', (code) => {
 			if (code !== 0) {
+				// Still surface any stdout logging that happened before the throw —
+				// most importantly `onError`'s own logging (e.g. "sent the alert"),
+				// which otherwise silently vanishes even though it ran.
+				for (const line of stdout.trim().split('\n')) {
+					if (line.trim() && !line.startsWith('__THYME_')) {
+						logs.push(line.trim())
+					}
+				}
 				resolve({
 					success: false,
 					logs,
@@ -510,6 +597,7 @@ try {
 				let resultLine: string | undefined
 				let storageLine: string | undefined
 				let statsLine: string | undefined
+				let callbacksLine: string | undefined
 
 				for (const line of lines) {
 					if (line.startsWith('__THYME_RESULT__')) {
@@ -518,6 +606,8 @@ try {
 						storageLine = line.substring('__THYME_STORAGE__'.length)
 					} else if (line.startsWith('__THYME_STATS__')) {
 						statsLine = line.substring('__THYME_STATS__'.length)
+					} else if (line.startsWith('__THYME_CALLBACKS__')) {
+						callbacksLine = line.substring('__THYME_CALLBACKS__'.length)
 					} else if (line.trim()) {
 						logs.push(line.trim())
 					}
@@ -538,6 +628,9 @@ try {
 							memoryUsed: undefined,
 							rpcRequestCount: undefined,
 						}
+				const definedCallbacks = callbacksLine
+					? (JSON.parse(callbacksLine) as string[])
+					: []
 
 				resolve({
 					success: true,
@@ -547,7 +640,159 @@ try {
 					executionTime: stats.executionTime,
 					memoryUsed: stats.memoryUsed,
 					rpcRequestCount: stats.rpcRequestCount,
+					definedCallbacks,
 				})
+			} catch (error) {
+				resolve({
+					success: false,
+					logs,
+					error: sanitizeErrorMessage(
+						`Failed to parse result: ${error instanceof Error ? error.message : String(error)}`,
+					),
+				})
+			}
+		})
+
+		proc.on('error', (error) => {
+			resolve({
+				success: false,
+				logs,
+				error: sanitizeErrorMessage(`Failed to spawn Deno: ${error.message}`),
+			})
+		})
+	})
+}
+
+/**
+ * Re-enter a task module and invoke a single post-submit lifecycle callback
+ * (`onSuccess` or `onFail`) with a caller-supplied payload. `thyme run` never
+ * submits a real call, so there is no receipt to react to — this exists solely
+ * for `--simulate-callbacks`, which fabricates one to exercise the callback.
+ *
+ * Mirrors production's phase-2 sandbox re-entry: a fresh process, the same
+ * `ctx` shape `run` gets (rebuilt from `args`/`secrets`/`storage`, not carried
+ * over from any prior process), and no `__THYME_RESULT__`/stats output — the
+ * caller already knows the outcome; there's nothing for the callback to return.
+ */
+export async function runCallbackInDeno(
+	taskPath: string,
+	args: unknown,
+	config: TaskConfig,
+	projectRoot: string,
+	storage: unknown,
+	callback: CallbackInvocation,
+): Promise<RunResult> {
+	const taskDir = dirname(resolve(taskPath))
+	const absoluteTaskPath = resolve(taskPath)
+	const absoluteProjectRoot = resolve(projectRoot)
+	const safeTaskPath = escapeJsString(absoluteTaskPath)
+	const safeArgs = sanitizeArgs(args)
+
+	let safeStorage: JsonObject
+	try {
+		safeStorage = normalizeStorage(storage)
+	} catch (err) {
+		return {
+			success: false,
+			logs: [],
+			error: sanitizeErrorMessage(
+				err instanceof Error ? err.message : String(err),
+			),
+		}
+	}
+
+	const runtimeEnv = config.env ?? {}
+	const safeSecrets = JSON.stringify(buildSecrets(runtimeEnv))
+	const safeStorageJson = JSON.stringify(safeStorage)
+	const rpcUrl = config.rpcUrl ?? runtimeEnv.RPC_URL
+	const safeRpcUrl = rpcUrl ? JSON.stringify(rpcUrl) : 'undefined'
+
+	const denoFlags = buildDenoFlags(taskDir, absoluteProjectRoot, config)
+
+	const execScript = `${buildContextPreamble(
+		safeTaskPath,
+		JSON.stringify(safeArgs),
+		safeSecrets,
+		safeStorageJson,
+		safeRpcUrl,
+	)}
+try {
+	const callbackName = ${JSON.stringify(callback.name)};
+	if (typeof task[callbackName] !== 'function') {
+		throw new Error('Task does not define ' + callbackName);
+	}
+	await task[callbackName](context, ${JSON.stringify(callback.payload)});
+	if (!isPlainObject(context.storage)) {
+		throw new Error('Storage must be a JSON object');
+	}
+	assertJsonStorage(context.storage);
+	console.log('__THYME_STORAGE__' + JSON.stringify(context.storage));
+} catch (error) {
+	console.error('Callback execution error:', error instanceof Error ? error.message : String(error));
+	Deno.exit(1);
+}
+`
+
+	return new Promise((resolve) => {
+		const proc = spawn('deno', denoFlags, {
+			stdio: ['pipe', 'pipe', 'pipe'],
+			cwd: taskDir,
+			env: {
+				...process.env,
+				...runtimeEnv,
+			},
+		})
+
+		let stdout = ''
+		let stderr = ''
+		const logs: string[] = []
+
+		proc.stdin?.write(execScript)
+		proc.stdin?.end()
+
+		proc.stdout?.on('data', (data) => {
+			stdout += data.toString()
+		})
+
+		proc.stderr?.on('data', (data) => {
+			stderr += data.toString()
+		})
+
+		proc.on('close', (code) => {
+			if (code !== 0) {
+				// Surface any stdout logging the callback did before it threw.
+				for (const line of stdout.trim().split('\n')) {
+					if (line.trim() && !line.startsWith('__THYME_')) {
+						logs.push(line.trim())
+					}
+				}
+				resolve({
+					success: false,
+					logs,
+					error: sanitizeErrorMessage(
+						stderr || `Process exited with code ${code}`,
+					),
+				})
+				return
+			}
+
+			try {
+				const lines = stdout.trim().split('\n')
+				let storageLine: string | undefined
+
+				for (const line of lines) {
+					if (line.startsWith('__THYME_STORAGE__')) {
+						storageLine = line.substring('__THYME_STORAGE__'.length)
+					} else if (line.trim()) {
+						logs.push(line.trim())
+					}
+				}
+
+				const storage = storageLine
+					? normalizeStorage(JSON.parse(storageLine))
+					: safeStorage
+
+				resolve({ success: true, storage, logs })
 			} catch (error) {
 				resolve({
 					success: false,
