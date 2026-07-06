@@ -237,6 +237,93 @@ storage; use `ctx.secrets` for credentials. Local runs read
 `functions/<task>/storage.json` when it exists. By default `thyme run` prints the
 produced storage without overwriting the file; pass `--persist` to write it back.
 
+## Lifecycle Callbacks
+
+A task can react to how its own execution turned out by defining any of four optional
+callbacks alongside `schema`/`run`: `onSuccess`, `onSkip`, `onError`, `onFail`. All four
+run **inside the sandbox**, get the same `ctx` as `run` (with `ctx.args` validated and
+transformed the same way), and can use `fetch` (e.g. to notify Telegram/Discord/Slack)
+and `ctx.storage`.
+
+```typescript
+import { defineTask, z } from '@thyme-labs/sdk'
+
+async function tg(token: string, chat: string, text: string) {
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: chat, text }),
+  })
+}
+
+export default defineTask({
+  schema: z.object({ vault: z.address() }),
+  async run(ctx) {
+    /* ... returns { canExec, calls } ... */
+    return { canExec: false, message: 'not ready' }
+  },
+
+  async onSuccess(ctx, { txHash }) {
+    ctx.storage.lastTx = txHash
+    await tg(ctx.secrets.TG_TOKEN, ctx.secrets.TG_CHAT, `✅ executed ${txHash}`)
+  },
+  async onFail(ctx, { stage, reason, txHash }) {
+    if (stage === 'timeout') return // outcome unknown — don't alert as a failure
+    await tg(
+      ctx.secrets.TG_TOKEN,
+      ctx.secrets.TG_CHAT,
+      `❌ ${stage} failure: ${reason}${txHash ? ` (${txHash})` : ''}`,
+    )
+  },
+})
+```
+
+### When each one fires
+
+- **`onSkip(ctx, { message })`** — `run` returned `canExec: false`.
+- **`onError(ctx, { error })`** — `run` threw.
+- **`onSuccess(ctx, tx)`** — the submitted call(s) were confirmed on-chain. Fires only
+  after Convex learns the on-chain result, which happens **after** the sandbox process
+  that ran `run` has already exited — so this runs in a **fresh** re-entry into the
+  sandbox, not the same process. In-memory state from `run` (local variables, closures)
+  is gone; only `ctx` (args/secrets/client/storage) and the payload are available.
+  `tx` is `{ txHash, blockNumber, gasUsed, gasCostWei, userOpHash? }`.
+- **`onFail(ctx, info)`** — the execution failed *after* being submitted on-chain (as
+  opposed to failing before submission — enforcement bails, insufficient gas, and
+  similar pre-submit failures never call `onFail`). Also runs in a fresh re-entry, same
+  constraints as `onSuccess`. `info.stage` distinguishes three cases:
+  - `'reverted'` — the receipt says the tx/userOp reverted; `txHash` is present.
+  - `'submit'` — the broadcast/bundler rejected it; it definitely never landed.
+  - `'timeout'` — the receipt wait timed out. **The outcome is unknown** — the tx may
+    still confirm later. Don't treat this as a confirmed failure (see the example
+    above); `txHash`/`userOpHash` are included when already known.
+
+### Best-effort semantics
+
+If a callback itself throws, it's caught and logged to the execution's logs — it can
+**never** change the execution's real status (a throwing `onSuccess` doesn't turn a
+confirmed execution into a failed one). There's no retry: a callback that performs a
+real side effect (like sending a message) should not be retried automatically, since
+that could duplicate the side effect.
+
+### Storage rules
+
+`ctx.storage` in a callback always starts from the **last committed** storage — never
+from an in-progress run's uncommitted writes.
+
+| Callback    | Sees                                  | Writes persist? |
+|-------------|----------------------------------------|:---:|
+| `onSkip`    | `run`'s live storage (same process)    | ✅ |
+| `onSuccess` | post-run committed storage             | ✅ |
+| `onFail`    | pre-run committed storage (the failed run's writes are dropped) | ✅ |
+| `onError`   | `run`'s live storage (same process)    | ❌ |
+
+### Local dev (`thyme run`)
+
+`onSkip`/`onError` run locally the same as in the cloud. `onSuccess`/`onFail` need an
+on-chain result, which `thyme run` doesn't produce — pass `--simulate-callbacks` to
+fabricate a fake receipt and exercise them locally instead.
+
 ## Encoding Function Calls
 
 Use viem's `encodeFunctionData` to build the `data` for a `Call`:

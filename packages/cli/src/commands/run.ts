@@ -10,7 +10,14 @@ import {
 	MethodNotFoundRpcError,
 	MethodNotSupportedRpcError,
 } from 'viem'
-import { checkDeno, runInDeno, type TaskConfig } from '../deno/runner'
+import {
+	type CallbackInvocation,
+	type CallbackName,
+	checkDeno,
+	runCallbackInDeno,
+	runInDeno,
+	type TaskConfig,
+} from '../deno/runner'
 import {
 	type EnvMap,
 	getEnv,
@@ -42,6 +49,7 @@ import {
 interface RunOptions {
 	simulate?: boolean
 	persist?: boolean
+	simulateCallbacks?: boolean
 }
 
 export async function runCommand(taskName?: string, options: RunOptions = {}) {
@@ -255,6 +263,29 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 			log(`  ${line}`)
 		}
 		info('Use --persist to write this output to storage.json')
+	}
+
+	// Simulate onSuccess/onFail with a fabricated receipt, since `thyme run`
+	// never actually submits a call and there is no real outcome to react to.
+	if (options.simulateCallbacks) {
+		if (!result.result?.canExec) {
+			log('')
+			info(
+				'--simulate-callbacks skipped: onSuccess/onFail react to a submitted call, and this run had canExec: false.',
+			)
+		} else {
+			await simulateCallbacksFlow({
+				taskPath,
+				args,
+				config,
+				projectRoot,
+				storagePath,
+				preRunStorage: storage,
+				postRunStorage: producedStorage,
+				definedCallbacks: result.definedCallbacks ?? [],
+				persist: options.persist,
+			})
+		}
 	}
 
 	// Show simulation tip if task can execute and simulation wasn't run
@@ -529,4 +560,186 @@ export function isMethodUnsupportedError(err: unknown): boolean {
 				message.includes('unsupported') ||
 				message.includes('unknown')))
 	)
+}
+
+interface SimulatedOutcome {
+	value: string
+	label: string
+	name: CallbackName
+	payload: unknown
+	/**
+	 * Which storage snapshot this outcome's callback should start from — mirrors
+	 * the SDK's storage rules: `onSuccess` sees post-run committed storage,
+	 * `onFail` sees pre-run committed storage (the failed run's writes dropped).
+	 */
+	storage: unknown
+}
+
+/**
+ * Fabricate a receipt and invoke `onSuccess`/`onFail` for `--simulate-callbacks`.
+ * `thyme run` never submits a real call, so there is no on-chain outcome to
+ * react to — this lets a task author exercise those two hooks locally anyway.
+ */
+async function simulateCallbacksFlow(params: {
+	taskPath: string
+	args: unknown
+	config: TaskConfig
+	projectRoot: string
+	storagePath: string
+	preRunStorage: unknown
+	postRunStorage: unknown
+	definedCallbacks: string[]
+	persist?: boolean
+}) {
+	const {
+		taskPath,
+		args,
+		config,
+		projectRoot,
+		storagePath,
+		preRunStorage,
+		postRunStorage,
+		definedCallbacks,
+		persist,
+	} = params
+
+	const hasOnSuccess = definedCallbacks.includes('onSuccess')
+	const hasOnFail = definedCallbacks.includes('onFail')
+
+	if (!hasOnSuccess && !hasOnFail) {
+		log('')
+		info('Task defines no onSuccess/onFail callback — nothing to simulate.')
+		return
+	}
+
+	const fakeTxHash = `0x${'ab'.repeat(32)}`
+	const outcomes: SimulatedOutcome[] = []
+
+	if (hasOnSuccess) {
+		outcomes.push({
+			value: 'onSuccess',
+			label: 'onSuccess — simulate a confirmed tx',
+			name: 'onSuccess',
+			payload: {
+				txHash: fakeTxHash,
+				blockNumber: 1,
+				gasUsed: '100000',
+				gasCostWei: '1000000000000000',
+			},
+			storage: postRunStorage,
+		})
+	}
+	if (hasOnFail) {
+		outcomes.push(
+			{
+				value: 'onFail:reverted',
+				label: "onFail — stage: 'reverted'",
+				name: 'onFail',
+				payload: {
+					stage: 'reverted',
+					reason: 'Simulated revert (thyme run --simulate-callbacks)',
+					txHash: fakeTxHash,
+				},
+				storage: preRunStorage,
+			},
+			{
+				value: 'onFail:submit',
+				label: "onFail — stage: 'submit'",
+				name: 'onFail',
+				payload: {
+					stage: 'submit',
+					reason: 'Simulated submit rejection (thyme run --simulate-callbacks)',
+				},
+				storage: preRunStorage,
+			},
+			{
+				value: 'onFail:timeout',
+				label: "onFail — stage: 'timeout'",
+				name: 'onFail',
+				payload: {
+					stage: 'timeout',
+					reason: 'Simulated receipt timeout (thyme run --simulate-callbacks)',
+					txHash: fakeTxHash,
+				},
+				storage: preRunStorage,
+			},
+		)
+	}
+
+	log('')
+	const SKIP = '__skip__'
+	const selected = await clack.select({
+		message: 'Simulate a callback outcome?',
+		options: [
+			...outcomes.map((o) => ({ value: o.value, label: o.label })),
+			{ value: SKIP, label: 'Skip' },
+		],
+	})
+
+	if (clack.isCancel(selected) || selected === SKIP) {
+		return
+	}
+
+	const chosen = outcomes.find((o) => o.value === selected)
+	if (!chosen) return
+
+	const spinner = clack.spinner()
+	spinner.start(`Running ${chosen.name} in Deno sandbox...`)
+
+	const invocation: CallbackInvocation = {
+		name: chosen.name,
+		payload: chosen.payload,
+	}
+	const callbackResult = await runCallbackInDeno(
+		taskPath,
+		args,
+		config,
+		projectRoot,
+		chosen.storage,
+		invocation,
+	)
+
+	if (!callbackResult.success) {
+		spinner.stop(`${chosen.name} failed`)
+		error(callbackResult.error ?? 'Unknown error')
+		if (callbackResult.logs.length > 0) {
+			step('Callback output:')
+			for (const callbackLog of callbackResult.logs) {
+				log(`  ${callbackLog}`)
+			}
+		}
+		return
+	}
+
+	spinner.stop(`${chosen.name} executed successfully`)
+
+	if (callbackResult.logs.length > 0) {
+		log('')
+		step('Callback output:')
+		for (const callbackLog of callbackResult.logs) {
+			log(`  ${callbackLog}`)
+		}
+	}
+
+	const callbackStorage = callbackResult.storage ?? {}
+	log('')
+	if (persist) {
+		try {
+			await writeFile(
+				storagePath,
+				`${JSON.stringify(callbackStorage, null, 2)}\n`,
+			)
+			info(`Storage persisted to ${storagePath}`)
+		} catch (err) {
+			error(
+				`Failed to persist storage.json: ${err instanceof Error ? err.message : String(err)}`,
+			)
+		}
+	} else {
+		step(`Storage produced by ${chosen.name} (not persisted):`)
+		const storageJson = JSON.stringify(callbackStorage, null, 2)
+		for (const line of storageJson.split('\n')) {
+			log(`  ${line}`)
+		}
+	}
 }

@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { TaskDefinition } from './types'
+import type { TaskDefinition, ThymeContext } from './types'
 
 /**
  * Format a Zod validation failure into a single, readable line.
@@ -34,6 +34,12 @@ function formatArgsError(error: z.ZodError): string {
  * On invalid arguments `run` throws `Error('Invalid task arguments: ...')`,
  * which both runners surface as a failed execution.
  *
+ * The optional lifecycle callbacks (`onSuccess`, `onSkip`, `onError`, `onFail`)
+ * get the same `ctx.args` validation/transform as `run` before they're invoked.
+ * A definition may omit any of them; only the callbacks you actually define are
+ * present on the returned task, so runtime `typeof` probes of the bundled task
+ * (used to decide whether a callback needs to run) stay accurate.
+ *
  * @example
  * ```typescript
  * import { defineTask, z } from '@thyme-labs/sdk'
@@ -67,17 +73,22 @@ function formatArgsError(error: z.ZodError): string {
 export function defineTask<TSchema extends z.ZodType>(
 	definition: TaskDefinition<TSchema>,
 ): TaskDefinition<TSchema> {
-	const { schema, run } = definition
+	const { schema, run, onSuccess, onSkip, onError, onFail } = definition
 
-	return {
-		schema,
-		async run(ctx) {
-			// Validate + transform the raw arguments against the task's schema
-			// before the user's run body is ever entered. `parsed.data` is the
-			// schema's *output* type (transforms applied), so it matches the
-			// `z.infer<TSchema>` type that `run` is declared with.
-			// `safeParseAsync` so schemas with async refinements/transforms work
-			// (the sync `safeParse` throws on those instead of returning a result).
+	// Validate + transform the raw arguments against the task's schema before
+	// the wrapped function body is ever entered. `parsed.data` is the schema's
+	// *output* type (transforms applied), so it matches the `z.infer<TSchema>`
+	// type every hook is declared with. `safeParseAsync` so schemas with async
+	// refinements/transforms work (the sync `safeParse` throws on those instead
+	// of returning a result). Shared by `run` and every defined callback so
+	// `ctx.args` is identically validated/transformed everywhere.
+	function withValidatedArgs<R extends unknown[], Ret>(
+		fn: (ctx: ThymeContext<z.infer<TSchema>>, ...rest: R) => Ret,
+	): (
+		ctx: ThymeContext<z.infer<TSchema>>,
+		...rest: R
+	) => Promise<Awaited<Ret>> {
+		return async (ctx, ...rest): Promise<Awaited<Ret>> => {
 			const parsed = await schema.safeParseAsync(ctx.args)
 			if (!parsed.success) {
 				throw new Error(formatArgsError(parsed.error))
@@ -91,7 +102,21 @@ export function defineTask<TSchema extends z.ZodType>(
 			// shared reference (so in-task storage mutations still flow back).
 			const next: typeof ctx = Object.create(ctx)
 			next.args = parsed.data
-			return run(next)
-		},
+			// `Ret` is an unconstrained generic here, so TS can't structurally prove
+			// `await fn(...)` (typed `Ret`) narrows to `Awaited<Ret>` — this is exactly
+			// what `await` does at runtime for every concrete `Ret` this is ever
+			// instantiated with (`Promise<TaskResult>` for `run`, `Promise<void> | void`
+			// for the callbacks).
+			return (await fn(next, ...rest)) as Awaited<Ret>
+		}
+	}
+
+	return {
+		schema,
+		run: withValidatedArgs(run),
+		...(onSuccess ? { onSuccess: withValidatedArgs(onSuccess) } : {}),
+		...(onSkip ? { onSkip: withValidatedArgs(onSkip) } : {}),
+		...(onError ? { onError: withValidatedArgs(onError) } : {}),
+		...(onFail ? { onFail: withValidatedArgs(onFail) } : {}),
 	}
 }

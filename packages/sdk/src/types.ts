@@ -67,11 +67,67 @@ export interface FailResult {
 export type TaskResult = SuccessResult | FailResult
 
 /**
- * Task definition with schema and execution logic
+ * Payload passed to `onSuccess` once the submitted call(s) are confirmed on-chain.
+ */
+export type SuccessPayload = {
+	txHash: string
+	blockNumber: number
+	/** `BundlerResult.actualGasUsed` */
+	gasUsed: string
+	gasCostWei: string
+	/** Absent for raw self-paid transactions (no ERC-4337 UserOperation involved) */
+	userOpHash?: string
+}
+
+/** Payload passed to `onSkip` when `run` returned `canExec: false`. */
+export type SkipPayload = { message: string }
+
+/** Payload passed to `onError` when `run` threw. */
+export type ErrorPayload = { error: string }
+
+/**
+ * Payload passed to `onFail` when the execution failed after being submitted.
+ */
+export type FailPayload = {
+	/**
+	 * - `'reverted'` — the receipt says the tx/userOp reverted (`txHash` present).
+	 * - `'submit'`   — the broadcast/bundler rejected it (definitely never landed).
+	 * - `'timeout'`  — the receipt wait timed out: the outcome is UNKNOWN, the tx
+	 *   may still land. `txHash`/`userOpHash` are provided when known.
+	 */
+	stage: 'reverted' | 'submit' | 'timeout'
+	/** Redacted, user-facing reason (same text shown in the dashboard). */
+	reason: string
+	txHash?: string
+	userOpHash?: string
+}
+
+/**
+ * Task definition with schema, execution logic, and optional lifecycle callbacks.
  */
 export interface TaskDefinition<TSchema extends z.ZodType> {
 	/** Zod schema for validating task arguments */
 	schema: TSchema
 	/** Main execution function */
 	run: (ctx: ThymeContext<z.infer<TSchema>>) => Promise<TaskResult>
+	/** Called after the submitted call(s) are confirmed on-chain. */
+	onSuccess?: (
+		ctx: ThymeContext<z.infer<TSchema>>,
+		tx: SuccessPayload,
+	) => Promise<void> | void
+	/** Called when `run` returned `canExec: false`. */
+	onSkip?: (
+		ctx: ThymeContext<z.infer<TSchema>>,
+		info: SkipPayload,
+	) => Promise<void> | void
+	/** Called when `run` threw. */
+	onError?: (
+		ctx: ThymeContext<z.infer<TSchema>>,
+		info: ErrorPayload,
+	) => Promise<void> | void
+	/** Called when the execution failed after being submitted (reverted, rejected, or timed out). */
+	onFail?: (
+		ctx: ThymeContext<z.infer<TSchema>>,
+		info: FailPayload,
+	) => Promise<void> | void
 }
