@@ -22,6 +22,10 @@
 		"./lifecycle": {
 			"types": "./dist/lifecycle.d.ts",
 			"import": "./dist/lifecycle.js"
+		},
+		"./schema-extractor": {
+			"types": "./dist/schema-extractor.d.ts",
+			"import": "./dist/schema-extractor.js"
 		}
 	},
 	"files": [

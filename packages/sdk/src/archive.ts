@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { strToU8, zipSync } from 'fflate'
+
 export type { DecompressResult } from './archive-reader'
 export { decompressTask } from './archive-reader'
 

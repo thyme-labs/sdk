@@ -5,6 +5,7 @@ export default defineConfig({
 		'src/index.ts',
 		'src/archive-reader.ts',
 		'src/lifecycle.ts',
+		'src/schema-extractor.ts',
 	],
 	format: ['esm'],
 	dts: true,

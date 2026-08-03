@@ -6,8 +6,7 @@ export const LIFECYCLE_CALLBACK_NAMES = [
 	'onFail',
 ] as const
 
-export type LifecycleCallbackName =
-	(typeof LIFECYCLE_CALLBACK_NAMES)[number]
+export type LifecycleCallbackName = (typeof LIFECYCLE_CALLBACK_NAMES)[number]
 
 export function isLifecycleCallbackName(
 	value: string,
