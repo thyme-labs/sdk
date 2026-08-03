@@ -12,6 +12,10 @@ export type { InferSchema } from './schema'
 export { zodExtended as z } from './schema'
 export { extractSchemaFromTask } from './schema-extractor'
 export { defineTask } from './task'
+export {
+	CLOUD_TASK_RUNNER_SOURCE,
+	TASK_RUNTIME_OUTPUT_PREFIXES,
+} from './task-runtime'
 export type {
 	Call,
 	ErrorPayload,

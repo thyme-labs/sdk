@@ -26,6 +26,10 @@
 		"./schema-extractor": {
 			"types": "./dist/schema-extractor.d.ts",
 			"import": "./dist/schema-extractor.js"
+		},
+		"./task-runtime": {
+			"types": "./dist/task-runtime.d.ts",
+			"import": "./dist/task-runtime.js"
 		}
 	},
 	"files": [

@@ -9,6 +9,8 @@ describe('public barrel exports', () => {
 		expect(typeof sdk.Logger).toBe('function')
 		expect(typeof sdk.defineTask).toBe('function')
 		expect(typeof sdk.extractSchemaFromTask).toBe('function')
+		expect(typeof sdk.CLOUD_TASK_RUNNER_SOURCE).toBe('string')
+		expect(sdk.TASK_RUNTIME_OUTPUT_PREFIXES.result).toBe('__THYME_RESULT__')
 		expect(sdk.LIFECYCLE_CALLBACK_NAMES).toEqual([
 			'onSuccess',
 			'onSkip',

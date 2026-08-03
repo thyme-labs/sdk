@@ -6,6 +6,7 @@ export default defineConfig({
 		'src/archive-reader.ts',
 		'src/lifecycle.ts',
 		'src/schema-extractor.ts',
+		'src/task-runtime.ts',
 	],
 	format: ['esm'],
 	dts: true,
