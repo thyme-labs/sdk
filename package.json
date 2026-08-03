@@ -10,7 +10,8 @@
 		"packages/*"
 	],
 	"scripts": {
-		"build": "bun run --filter '*' build",
+		"build": "cd packages/sdk && bun run build && cd ../cli && bun run build",
+		"predev": "bun run build",
 		"dev": "bun run --filter '*' dev",
 		"test": "bun run --filter '*' test",
 		"lint": "biome check .",

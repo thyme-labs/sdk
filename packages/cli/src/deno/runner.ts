@@ -2,6 +2,10 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import type { TaskResult } from '@thyme-labs/sdk'
+import {
+	LIFECYCLE_CALLBACK_NAMES,
+	type LifecycleCallbackName,
+} from '@thyme-labs/sdk/lifecycle'
 
 type JsonValue =
 	| null
@@ -34,7 +38,7 @@ export interface RunResult {
 }
 
 /** The four optional lifecycle callback names a task definition may export. */
-export type CallbackName = 'onSuccess' | 'onSkip' | 'onError' | 'onFail'
+export type CallbackName = LifecycleCallbackName
 
 export interface CallbackInvocation {
 	name: CallbackName
@@ -484,7 +488,7 @@ export async function runInDeno(
 	)}
 // Runtime probe of which lifecycle callbacks this task defines. Emitted before
 // \`run\` so it survives the error path too — matches the production wrapper.
-const definedCallbacks = ['onSuccess', 'onSkip', 'onError', 'onFail'].filter(
+const definedCallbacks = ${JSON.stringify(LIFECYCLE_CALLBACK_NAMES)}.filter(
 	(name) => typeof task[name] === 'function',
 );
 console.log('__THYME_CALLBACKS__' + JSON.stringify(definedCallbacks));
