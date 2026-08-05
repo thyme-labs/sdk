@@ -10,7 +10,7 @@
 		"packages/*"
 	],
 	"scripts": {
-		"build": "cd packages/sdk && bun run build && cd ../cli && bun run build",
+		"build": "bun run --cwd packages/sdk build && bun run --cwd packages/cli build",
 		"predev": "bun run build",
 		"dev": "bun run --filter '*' dev",
 		"test": "bun run --filter '*' test",
