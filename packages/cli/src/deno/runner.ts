@@ -2,6 +2,11 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import type { TaskResult } from '@thyme-labs/sdk'
+import {
+	LIFECYCLE_CALLBACK_NAMES,
+	type LifecycleCallbackName,
+} from '@thyme-labs/sdk/lifecycle'
+import { TASK_RUNTIME_OUTPUT_PREFIXES } from '@thyme-labs/sdk/task-runtime'
 
 type JsonValue =
 	| null
@@ -34,7 +39,7 @@ export interface RunResult {
 }
 
 /** The four optional lifecycle callback names a task definition may export. */
-export type CallbackName = 'onSuccess' | 'onSkip' | 'onError' | 'onFail'
+export type CallbackName = LifecycleCallbackName
 
 export interface CallbackInvocation {
 	name: CallbackName
@@ -484,10 +489,10 @@ export async function runInDeno(
 	)}
 // Runtime probe of which lifecycle callbacks this task defines. Emitted before
 // \`run\` so it survives the error path too — matches the production wrapper.
-const definedCallbacks = ['onSuccess', 'onSkip', 'onError', 'onFail'].filter(
+const definedCallbacks = ${JSON.stringify(LIFECYCLE_CALLBACK_NAMES)}.filter(
 	(name) => typeof task[name] === 'function',
 );
-console.log('__THYME_CALLBACKS__' + JSON.stringify(definedCallbacks));
+console.log(${JSON.stringify(TASK_RUNTIME_OUTPUT_PREFIXES.callbacks)} + JSON.stringify(definedCallbacks));
 
 try {
 	// Track execution time and memory
@@ -523,9 +528,9 @@ try {
 	// Ensure memory measurement is non-negative (GC can cause negative values)
 	const memoryUsed = Math.max(0, endMemory - startMemory);
 
-	console.log('__THYME_RESULT__' + JSON.stringify(result));
-	console.log('__THYME_STORAGE__' + JSON.stringify(context.storage));
-	console.log('__THYME_STATS__' + JSON.stringify({ executionTime, memoryUsed, rpcRequestCount }));
+	console.log(${JSON.stringify(TASK_RUNTIME_OUTPUT_PREFIXES.result)} + JSON.stringify(result));
+	console.log(${JSON.stringify(TASK_RUNTIME_OUTPUT_PREFIXES.storage)} + JSON.stringify(context.storage));
+	console.log(${JSON.stringify(TASK_RUNTIME_OUTPUT_PREFIXES.stats)} + JSON.stringify({ executionTime, memoryUsed, rpcRequestCount }));
 } catch (error) {
 	if (typeof task.onError === 'function') {
 		try {
@@ -577,7 +582,10 @@ try {
 				// most importantly `onError`'s own logging (e.g. "sent the alert"),
 				// which otherwise silently vanishes even though it ran.
 				for (const line of stdout.trim().split('\n')) {
-					if (line.trim() && !line.startsWith('__THYME_')) {
+					if (
+						line.trim() &&
+						!line.startsWith(TASK_RUNTIME_OUTPUT_PREFIXES.namespace)
+					) {
 						logs.push(line.trim())
 					}
 				}
@@ -600,14 +608,22 @@ try {
 				let callbacksLine: string | undefined
 
 				for (const line of lines) {
-					if (line.startsWith('__THYME_RESULT__')) {
-						resultLine = line.substring('__THYME_RESULT__'.length)
-					} else if (line.startsWith('__THYME_STORAGE__')) {
-						storageLine = line.substring('__THYME_STORAGE__'.length)
-					} else if (line.startsWith('__THYME_STATS__')) {
-						statsLine = line.substring('__THYME_STATS__'.length)
-					} else if (line.startsWith('__THYME_CALLBACKS__')) {
-						callbacksLine = line.substring('__THYME_CALLBACKS__'.length)
+					if (line.startsWith(TASK_RUNTIME_OUTPUT_PREFIXES.result)) {
+						resultLine = line.substring(
+							TASK_RUNTIME_OUTPUT_PREFIXES.result.length,
+						)
+					} else if (line.startsWith(TASK_RUNTIME_OUTPUT_PREFIXES.storage)) {
+						storageLine = line.substring(
+							TASK_RUNTIME_OUTPUT_PREFIXES.storage.length,
+						)
+					} else if (line.startsWith(TASK_RUNTIME_OUTPUT_PREFIXES.stats)) {
+						statsLine = line.substring(
+							TASK_RUNTIME_OUTPUT_PREFIXES.stats.length,
+						)
+					} else if (line.startsWith(TASK_RUNTIME_OUTPUT_PREFIXES.callbacks)) {
+						callbacksLine = line.substring(
+							TASK_RUNTIME_OUTPUT_PREFIXES.callbacks.length,
+						)
 					} else if (line.trim()) {
 						logs.push(line.trim())
 					}
@@ -726,7 +742,7 @@ try {
 		throw new Error('Storage must be a JSON object');
 	}
 	assertJsonStorage(context.storage);
-	console.log('__THYME_STORAGE__' + JSON.stringify(context.storage));
+	console.log(${JSON.stringify(TASK_RUNTIME_OUTPUT_PREFIXES.storage)} + JSON.stringify(context.storage));
 } catch (error) {
 	console.error('Callback execution error:', error instanceof Error ? error.message : String(error));
 	Deno.exit(1);
@@ -762,7 +778,10 @@ try {
 			if (code !== 0) {
 				// Surface any stdout logging the callback did before it threw.
 				for (const line of stdout.trim().split('\n')) {
-					if (line.trim() && !line.startsWith('__THYME_')) {
+					if (
+						line.trim() &&
+						!line.startsWith(TASK_RUNTIME_OUTPUT_PREFIXES.namespace)
+					) {
 						logs.push(line.trim())
 					}
 				}
@@ -781,8 +800,10 @@ try {
 				let storageLine: string | undefined
 
 				for (const line of lines) {
-					if (line.startsWith('__THYME_STORAGE__')) {
-						storageLine = line.substring('__THYME_STORAGE__'.length)
+					if (line.startsWith(TASK_RUNTIME_OUTPUT_PREFIXES.storage)) {
+						storageLine = line.substring(
+							TASK_RUNTIME_OUTPUT_PREFIXES.storage.length,
+						)
 					} else if (line.trim()) {
 						logs.push(line.trim())
 					}

@@ -14,6 +14,22 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
+		},
+		"./archive-reader": {
+			"types": "./dist/archive-reader.d.ts",
+			"import": "./dist/archive-reader.js"
+		},
+		"./lifecycle": {
+			"types": "./dist/lifecycle.d.ts",
+			"import": "./dist/lifecycle.js"
+		},
+		"./schema-extractor": {
+			"types": "./dist/schema-extractor.d.ts",
+			"import": "./dist/schema-extractor.js"
+		},
+		"./task-runtime": {
+			"types": "./dist/task-runtime.d.ts",
+			"import": "./dist/task-runtime.js"
 		}
 	},
 	"files": [
