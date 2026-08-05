@@ -1,5 +1,13 @@
 # @thyme-labs/sdk
 
+## 0.6.0
+
+### Minor Changes
+
+- 513812d: Expose lifecycle callback contracts, source-schema extraction, the cloud task
+  runner protocol, and an isolate-safe archive reader so the Thyme backend, CLI,
+  and console consume the same runtime definitions as the public SDK.
+
 ## 0.5.0
 
 ### Minor Changes
