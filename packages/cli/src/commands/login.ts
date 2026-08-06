@@ -5,6 +5,7 @@ import {
 	getApiUrl,
 	getAuthToken,
 	readConfig,
+	saveCredential,
 	setApiUrl,
 	setAuthToken,
 } from '../utils/config'
@@ -30,11 +31,22 @@ const verifyResponseSchema = z.object({
 		email: z.string(),
 	}),
 	workspaces: z.array(workspaceSchema).optional().default([]),
+	credential: z
+		.object({
+			id: z.string(),
+			keyPrefix: z.string(),
+			kind: z.enum(['standard', 'management']),
+			workspaceId: z.string().optional(),
+			scopes: z.array(z.string()),
+			expiresAt: z.number().optional(),
+		})
+		.optional(),
 })
 
 interface LoginOptions {
 	browserless?: boolean
 	token?: boolean
+	management?: boolean
 	rewriteApiUrl?: boolean
 	apiUrl?: string
 }
@@ -184,16 +196,18 @@ async function verifyAndDisplayUser(apiUrl: string, token: string) {
 			}
 		}
 	}
+
+	return verifyData
 }
 
-async function browserLogin(apiUrl: string) {
+async function browserLogin(apiUrl: string, mode: 'standard' | 'management') {
 	const spinner = clack.spinner()
 	spinner.start('Starting authentication...')
 
 	const startResponse = await fetch(`${apiUrl}/api/cli/auth/start`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ browserless: false }),
+		body: JSON.stringify({ browserless: false, mode }),
 	})
 
 	if (!startResponse.ok) {
@@ -215,14 +229,17 @@ async function browserLogin(apiUrl: string) {
 	return pollForToken(apiUrl, sessionId, sessionSecret)
 }
 
-async function browserlessLogin(apiUrl: string) {
+async function browserlessLogin(
+	apiUrl: string,
+	mode: 'standard' | 'management',
+) {
 	const spinner = clack.spinner()
 	spinner.start('Starting authentication...')
 
 	const startResponse = await fetch(`${apiUrl}/api/cli/auth/start`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ browserless: true }),
+		body: JSON.stringify({ browserless: true, mode }),
 	})
 
 	if (!startResponse.ok) {
@@ -312,10 +329,16 @@ async function tokenLogin(_apiUrl: string) {
 
 export async function loginCommand(options: LoginOptions = {}) {
 	intro('Thyme CLI - Login')
+	if (options.management && options.token) {
+		error(
+			'--management starts a browser consent flow and cannot be combined with --token',
+		)
+		process.exit(2)
+	}
 
 	// Check if already authenticated
 	const existingToken = getAuthToken()
-	if (existingToken && !options.token) {
+	if (existingToken && !options.token && !options.management) {
 		const shouldContinue = await clack.confirm({
 			message: 'You are already logged in. Do you want to re-authenticate?',
 		})
@@ -373,23 +396,52 @@ export async function loginCommand(options: LoginOptions = {}) {
 
 	try {
 		let token: string
+		const mode = options.management ? 'management' : 'standard'
 
 		if (options.token) {
 			token = await tokenLogin(apiUrl)
 		} else if (options.browserless) {
-			token = await browserlessLogin(apiUrl)
+			token = await browserlessLogin(apiUrl, mode)
 		} else {
-			token = await browserLogin(apiUrl)
+			token = await browserLogin(apiUrl, mode)
 		}
 
-		// Save token
-		setAuthToken(token)
-		clack.log.step('Token saved to ~/.thyme/config.json')
-
 		// Verify and display user info
-		await verifyAndDisplayUser(apiUrl, token)
+		const verifyData = await verifyAndDisplayUser(apiUrl, token)
+		const credential = verifyData.credential
+		if (options.management && credential?.kind !== 'management') {
+			throw new Error(
+				'The approved credential is not workspace-bound management access',
+			)
+		}
 
-		outro(`\nYou can now upload tasks with ${pc.cyan('thyme upload')}`)
+		if (credential?.kind === 'management') {
+			const workspace = verifyData.workspaces.find(
+				(item) => item.id === credential.workspaceId,
+			)
+			saveCredential({
+				...credential,
+				token,
+				workspaceName: workspace?.name,
+				userId: verifyData.user.id,
+				userEmail: verifyData.user.email,
+			})
+		}
+
+		if (credential?.kind !== 'management') {
+			setAuthToken(token)
+		}
+		clack.log.step(
+			credential?.kind === 'management'
+				? 'Workspace credential saved to ~/.thyme/config.json'
+				: 'Token saved to ~/.thyme/config.json',
+		)
+
+		outro(
+			options.management
+				? `\nManagement access is ready for ${pc.cyan(verifyData.workspaces[0]?.name ?? 'the selected workspace')}`
+				: `\nYou can now upload tasks with ${pc.cyan('thyme upload')}`,
+		)
 	} catch (err) {
 		error(err instanceof Error ? err.message : String(err))
 		process.exit(1)

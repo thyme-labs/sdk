@@ -2,11 +2,10 @@
 
 CLI for developing and uploading Thyme Web3 automation tasks. Binary: `thyme`.
 
-The CLI scaffolds projects, runs tasks locally in a Deno sandbox, and uploads task
-bundles to Thyme Cloud. Scheduling, triggers, profiles, gas mode, secret bindings,
-cloud execution, and logs are configured in the **Thyme Console** — there is no CLI
-command for those. Upload puts your code in the cloud; you assemble and schedule an
-executable from it in the Console.
+The CLI scaffolds projects, runs tasks locally in a Deno sandbox, uploads immutable
+function releases, and proxies the Thyme Functions management API. The same projects,
+executables, profiles, storage, secrets, webhooks, executions, and logs available in
+the Console can be managed through typed commands or the raw `thyme api` command.
 
 ## Installation
 
@@ -96,9 +95,10 @@ thyme list
 
 ### `thyme login`
 
-Authenticate with Thyme Cloud. `login` mints a single personal API key that is reused
-for both uploads and the auth poll, then saves it to `~/.thyme/config.json` (file mode
-`0600`) — **not** to `.env`. Revoking the key in
+Authenticate with Thyme Cloud. Standard login mints a personal API key for uploads;
+`--management` mints a separate full-scope key permanently bound to the workspace you
+approve. Credentials are saved to `~/.thyme/config.json` (file mode `0600`) — **not**
+to `.env`. Revoking a key in
 **[Console → API Keys](https://functions.thymelabs.io/dashboard/api-keys)** ends the CLI
 session.
 
@@ -111,6 +111,9 @@ thyme login --browserless
 
 # Paste an existing API key
 thyme login --token
+
+# Consent to full, workspace-bound Functions management access
+thyme login --management
 ```
 
 **Browser flow (default):** the CLI starts a session and opens your browser to
@@ -127,6 +130,8 @@ Open the URL on another device and enter the code to approve.
 
 - `--browserless` — use the pairing-code flow instead of opening a browser.
 - `--token` — paste an existing API key instead of using the device flow.
+- `--management` — show the Functions scope bundle in the browser, require an
+  owner/admin workspace selection, and save a credential bound to that workspace.
 - `--api-url <url>` — override the Thyme Cloud API URL for this login (http/https).
 - `--rewrite-api-url` — update the stored `apiUrl` in `~/.thyme/config.json`.
 
@@ -135,11 +140,17 @@ projects.
 
 ### `thyme logout`
 
-Remove the saved auth token. Deletes only the `authToken` key from
-`~/.thyme/config.json`; it does not touch environment variables or any other config.
+Remove the saved standard auth token, or remove one locally stored management
+credential. This does not revoke the server-side key; use Console → API Keys for that.
 
 ```bash
 thyme logout
+
+# Remove the sole saved management credential
+thyme logout --management
+
+# Choose one when several workspace credentials are saved
+thyme logout --management --workspace WORKSPACE_ID
 ```
 
 ### `thyme upload [task]`
@@ -203,6 +214,47 @@ export default defineTask({
 > **Upload schedules nothing.** After upload, your code shows up in **Console →
 > Functions**. Triggers, profile, gas mode, args, and secret bindings are all
 > configured in the Console when you assemble an executable from the uploaded function.
+
+### Management commands
+
+Authenticate first with `thyme login --management`. Commands emit JSON and select the
+only stored management workspace automatically; pass `--workspace <id>` when several
+workspace credentials are stored.
+
+```bash
+thyme projects list
+thyme functions list --project PROJECT_ID --name price-watcher
+thyme executables pause EXECUTABLE_ID
+thyme executables set-function EXECUTABLE_ID --function FUNCTION_V2_ID
+thyme executables resume EXECUTABLE_ID
+thyme executions logs EXECUTION_ID
+thyme profiles share PROFILE_ID --project TARGET_PROJECT_ID --alias operator
+thyme executables storage-set EXECUTABLE_ID \
+  --expected-version 3 --value '{"cursor":1200}'
+```
+
+The storage commands read or replace the complete Convex-backed JSON object and
+support serialized values up to 16 MiB per management request.
+
+Available groups are `projects`, `chains`, `functions`, `executables`, `executions`,
+`profiles`, `secrets`, `webhooks`, and `usage`. Run `thyme <group> --help` for its operations.
+Function commands preserve immutable version tags; `set-function` requires a paused
+executable and starts an asynchronous atomic sandbox rebuild.
+
+For routes without a dedicated command, use the raw proxy. It accepts only
+relative `/api/v1/...` paths and never forwards the credential outside the
+management surface:
+
+```bash
+thyme api GET '/api/v1/functions?projectId=PROJECT_ID&name=price-watcher'
+thyme api PATCH /api/v1/executables/EXECUTABLE_ID/pinned \
+  --data '{"pinned":true}'
+```
+
+Mutations generate an `Idempotency-Key` automatically and reuse it for a network
+retry. Supply `--idempotency-key <key>` to preserve identity across separate CLI
+invocations. See the hosted Management API documentation and OpenAPI document for
+the wire-level contract.
 
 ### `thyme api-url`
 

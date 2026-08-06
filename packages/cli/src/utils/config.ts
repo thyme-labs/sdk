@@ -1,11 +1,32 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getEnv } from './env'
 
-interface Config {
+export interface StoredCredential {
+	id: string
+	keyPrefix: string
+	token: string
+	kind: 'standard' | 'management'
+	workspaceId?: string
+	workspaceName?: string
+	scopes: string[]
+	expiresAt?: number
+	userId?: string
+	userEmail?: string
+}
+
+export interface Config {
+	version?: 2
 	authToken?: string
 	apiUrl?: string
+	credentials?: StoredCredential[]
 }
 
 export type ApiUrlSource = 'config' | 'env' | 'default'
@@ -39,6 +60,9 @@ export function writeConfig(config: Config): void {
 	writeFileSync(configPath, JSON.stringify(config, null, 2), {
 		mode: 0o600,
 	})
+	// `mode` only affects newly created files. Correct legacy or externally
+	// created config files too, because they may now hold management tokens.
+	if (process.platform !== 'win32') chmodSync(configPath, 0o600)
 }
 
 export function getAuthToken(): string | undefined {
@@ -60,6 +84,41 @@ export function clearAuthToken(): void {
 	const config = readConfig()
 	delete config.authToken
 	writeConfig(config)
+}
+
+export function getStoredCredentials(): StoredCredential[] {
+	return readConfig().credentials ?? []
+}
+
+export function saveCredential(credential: StoredCredential): void {
+	const config = readConfig()
+	const credentials = config.credentials ?? []
+	const nextCredentials = credentials.filter(
+		(existing) =>
+			existing.id !== credential.id &&
+			!(
+				credential.kind === 'management' &&
+				existing.kind === 'management' &&
+				existing.workspaceId === credential.workspaceId
+			),
+	)
+	nextCredentials.push(credential)
+	writeConfig({
+		...config,
+		version: 2,
+		credentials: nextCredentials,
+	})
+}
+
+export function removeCredential(id: string): void {
+	const config = readConfig()
+	writeConfig({
+		...config,
+		version: 2,
+		credentials: (config.credentials ?? []).filter(
+			(credential) => credential.id !== id,
+		),
+	})
 }
 
 const DEFAULT_API_URL = 'https://functions.thymelabs.io/http'
