@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
+import { registerApiCommand } from './commands/api'
 import { apiUrlCommand } from './commands/api-url'
 import { initCommand } from './commands/init'
 import { listCommand } from './commands/list'
 import { loginCommand } from './commands/login'
 import { logoutCommand } from './commands/logout'
+import { registerManagementCommands } from './commands/management'
 import { newCommand } from './commands/new'
 import { runCommand } from './commands/run'
 import { uploadCommand } from './commands/upload'
@@ -70,6 +72,7 @@ program
 	.description('Authenticate with Thyme Cloud')
 	.option('--browserless', 'Use pairing code instead of browser')
 	.option('--token', 'Manually paste an API token')
+	.option('--management', 'Request workspace-bound Functions management access')
 	.option('--rewrite-api-url', 'Prompt and rewrite saved API URL')
 	.option('--api-url <url>', 'Set and use API URL for this login')
 	.action((options) => loginCommand(options))
@@ -77,7 +80,9 @@ program
 program
 	.command('logout')
 	.description('Log out of Thyme Cloud')
-	.action(logoutCommand)
+	.option('--management', 'Remove a saved management credential')
+	.option('-w, --workspace <id>', 'Management workspace to remove')
+	.action((options) => logoutCommand(options))
 
 program
 	.command('upload')
@@ -94,5 +99,8 @@ program
 	.command('api-url')
 	.description('Show current Thyme API URL')
 	.action(apiUrlCommand)
+
+registerApiCommand(program)
+registerManagementCommands(program)
 
 program.parse()

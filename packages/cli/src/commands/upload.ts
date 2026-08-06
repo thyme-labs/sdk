@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { z } from 'zod'
 import { bundleTask } from '../utils/bundler'
 import { compressTask } from '../utils/compress'
-import { getApiUrl, getAuthToken } from '../utils/config'
+import { getApiUrl, getAuthToken, getStoredCredentials } from '../utils/config'
 import { loadEnv } from '../utils/env'
 import {
 	formatUploadError,
@@ -10,6 +10,7 @@ import {
 	resolveUploadVersionTag,
 	validateVersionTag,
 } from '../utils/function-versioning'
+import { selectManagementCredential } from '../utils/management-api'
 import { extractSchemaFromTask } from '../utils/schema-extractor'
 import {
 	discoverTasks,
@@ -86,12 +87,32 @@ export async function uploadCommand(
 		process.exit(1)
 	}
 
-	// Check for auth token
-	const authToken = getAuthToken()
+	// Prefer the management credential bound to an explicitly selected
+	// workspace (or the sole saved management workspace). Standard login tokens
+	// remain a backwards-compatible fallback for the interactive upload flow.
+	const standardAuthToken = getAuthToken()
+	let managementCredential: ReturnType<typeof selectManagementCredential>
+	try {
+		managementCredential = selectManagementCredential(
+			getStoredCredentials(),
+			workspaceId,
+		)
+	} catch (credentialError) {
+		if (!standardAuthToken) {
+			error(
+				credentialError instanceof Error
+					? credentialError.message
+					: String(credentialError),
+			)
+			process.exit(1)
+		}
+	}
+	const authToken = managementCredential?.token ?? standardAuthToken
 	if (!authToken) {
-		error('Not authenticated. Run `thyme login` first.')
+		error('Not authenticated. Run `thyme login --management` or `thyme login`.')
 		process.exit(1)
 	}
+	workspaceId ??= managementCredential?.workspaceId
 
 	// Get API URL (Thyme Cloud API URL)
 	const apiUrl = getApiUrl()

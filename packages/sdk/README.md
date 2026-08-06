@@ -232,7 +232,7 @@ export default defineTask({
 })
 ```
 
-`ctx.storage` must be a plain JSON object and is capped at 64KB. Do not put secrets in
+`ctx.storage` must be a plain JSON object and is capped at 100 MiB. Do not put secrets in
 storage; use `ctx.secrets` for credentials. Local runs read
 `functions/<task>/storage.json` when it exists. By default `thyme run` prints the
 produced storage without overwriting the file; pass `--persist` to write it back.

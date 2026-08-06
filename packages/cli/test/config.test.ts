@@ -96,6 +96,78 @@ describe('auth token helpers', () => {
 	})
 })
 
+describe('stored credentials', () => {
+	test('stores multiple workspace credentials without an active context', () => {
+		config.saveCredential({
+			id: 'key-1',
+			keyPrefix: 'thyme_a',
+			token: 'secret-1',
+			kind: 'management',
+			workspaceId: 'workspace-1',
+			workspaceName: 'First',
+			scopes: ['projects:read'],
+		})
+		config.saveCredential({
+			id: 'key-2',
+			keyPrefix: 'thyme_b',
+			token: 'secret-2',
+			kind: 'management',
+			workspaceId: 'workspace-2',
+			workspaceName: 'Second',
+			scopes: ['projects:read', 'projects:write'],
+		})
+
+		expect(config.getStoredCredentials()).toHaveLength(2)
+		expect(config.readConfig()).not.toHaveProperty('activeCredential')
+	})
+
+	test('updates and removes credentials by key id', () => {
+		config.saveCredential({
+			id: 'key-1',
+			keyPrefix: 'thyme_a',
+			token: 'old',
+			kind: 'standard',
+			scopes: [],
+		})
+		config.saveCredential({
+			id: 'key-1',
+			keyPrefix: 'thyme_a',
+			token: 'new',
+			kind: 'standard',
+			scopes: ['functions:read'],
+		})
+
+		expect(config.getStoredCredentials()).toEqual([
+			expect.objectContaining({ id: 'key-1', token: 'new' }),
+		])
+		config.removeCredential('key-1')
+		expect(config.getStoredCredentials()).toEqual([])
+	})
+
+	test('replaces an older management login for the same workspace', () => {
+		config.saveCredential({
+			id: 'old-key',
+			keyPrefix: 'thy_old',
+			token: 'old-token',
+			kind: 'management',
+			workspaceId: 'workspace-a',
+			scopes: ['projects:read'],
+		})
+		config.saveCredential({
+			id: 'new-key',
+			keyPrefix: 'thy_new',
+			token: 'new-token',
+			kind: 'management',
+			workspaceId: 'workspace-a',
+			scopes: ['projects:read', 'projects:write'],
+		})
+
+		expect(config.getStoredCredentials()).toEqual([
+			expect.objectContaining({ id: 'new-key', token: 'new-token' }),
+		])
+	})
+})
+
 describe('API URL resolution', () => {
 	const DEFAULT_URL = 'https://functions.thymelabs.io/http'
 
