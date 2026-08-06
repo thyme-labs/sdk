@@ -1,5 +1,13 @@
 # @thyme-labs/cli
 
+## 0.6.0
+
+### Minor Changes
+
+- b7e7fa4: Add immutable function version tags to `thyme upload`, including automatic `v1`
+  defaults, existing-name prompts, `--tag`, local validation, and structured upload
+  conflict and idempotency messages.
+
 ## 0.5.1
 
 ### Patch Changes
