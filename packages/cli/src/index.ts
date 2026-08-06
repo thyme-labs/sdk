@@ -85,8 +85,9 @@ program
 	.argument('[task]', 'Task name')
 	.option('-w, --workspace <id>', 'Workspace ID to upload to')
 	.option('-p, --project <id>', 'Project ID to upload to')
+	.option('-t, --tag <tag>', 'Immutable function version tag')
 	.action((task, options) =>
-		uploadCommand(task, options.workspace, options.project),
+		uploadCommand(task, options.workspace, options.project, options.tag),
 	)
 
 program
