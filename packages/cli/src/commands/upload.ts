@@ -4,6 +4,12 @@ import { bundleTask } from '../utils/bundler'
 import { compressTask } from '../utils/compress'
 import { getApiUrl, getAuthToken } from '../utils/config'
 import { loadEnv } from '../utils/env'
+import {
+	formatUploadError,
+	formatUploadSuccess,
+	resolveUploadVersionTag,
+	validateVersionTag,
+} from '../utils/function-versioning'
 import { extractSchemaFromTask } from '../utils/schema-extractor'
 import {
 	discoverTasks,
@@ -36,13 +42,36 @@ const verifyResponseSchema = z.object({
 })
 
 const uploadResponseSchema = z.object({
-	taskId: z.string().optional(),
+	taskId: z.string(),
+	versionTag: z.string(),
+	created: z.boolean(),
+})
+
+const functionsResponseSchema = z.object({
+	data: z.array(
+		z.object({
+			_id: z.string(),
+			versionTag: z.string().nullable().optional(),
+		}),
+	),
+	versioning: z.object({
+		functionName: z.string(),
+		reservedVersionTags: z.array(z.string()),
+		suggestedVersionTag: z.string(),
+	}),
+})
+
+const apiErrorSchema = z.object({
+	error: z.string().optional(),
+	code: z.string().optional(),
+	suggestedVersionTag: z.string().optional(),
 })
 
 export async function uploadCommand(
 	taskName?: string,
 	workspaceId?: string,
 	projectId?: string,
+	providedTag?: string,
 ) {
 	intro('Thyme CLI - Upload Task')
 
@@ -241,6 +270,71 @@ export async function uploadCommand(
 		process.exit(1)
 	}
 
+	const versionSpinner = clack.spinner()
+	versionSpinner.start('Checking function versions...')
+	let versionTag: string
+	try {
+		const params = new URLSearchParams({
+			projectId: selectedProjId as string,
+			name: finalTaskName,
+		})
+		const response = await fetch(`${apiUrl}/api/v1/functions?${params}`, {
+			headers: {
+				Authorization: `Bearer ${authToken}`,
+				'x-workspace-id': selectedWsId as string,
+			},
+		})
+		const raw = await response.json().catch(() => null)
+		if (!response.ok) {
+			const parsedError = apiErrorSchema.safeParse(raw)
+			throw new Error(
+				formatUploadError(
+					response.status,
+					parsedError.success ? parsedError.data : null,
+				),
+			)
+		}
+		const parsed = functionsResponseSchema.safeParse(raw)
+		if (!parsed.success) {
+			throw new Error(
+				`Invalid function discovery response: ${parsed.error.message}`,
+			)
+		}
+		versionSpinner.stop('Function versions loaded')
+		const familyExists =
+			parsed.data.data.length > 0 ||
+			parsed.data.versioning.reservedVersionTags.length > 0
+		versionTag = await resolveUploadVersionTag({
+			providedTag,
+			familyExists,
+			suggestedVersionTag: parsed.data.versioning.suggestedVersionTag,
+			isInteractive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+			prompt: async (suggestedVersionTag) => {
+				const selected = await clack.text({
+					message: 'Version tag',
+					initialValue: suggestedVersionTag,
+					validate(value) {
+						const validation = validateVersionTag(value ?? '')
+						return validation.ok ? undefined : validation.message
+					},
+				})
+				if (clack.isCancel(selected)) return null
+				return selected as string
+			},
+		})
+	} catch (err) {
+		versionSpinner.stop('Could not select a function version')
+		if (
+			err instanceof Error &&
+			err.message === 'VERSION_TAG_PROMPT_CANCELLED'
+		) {
+			clack.cancel('Operation cancelled')
+			process.exit(0)
+		}
+		error(err instanceof Error ? err.message : String(err))
+		process.exit(1)
+	}
+
 	const spinner = clack.spinner()
 	spinner.start('Bundling task...')
 
@@ -281,6 +375,7 @@ export async function uploadCommand(
 		clack.log.message(`  ${pc.dim('Workspace:')} ${pc.cyan(selectedWs.name)}`)
 		clack.log.message(`  ${pc.dim('Project:')}   ${pc.cyan(selectedProj.name)}`)
 		clack.log.message(`  ${pc.dim('Task:')}      ${pc.cyan(finalTaskName)}`)
+		clack.log.message(`  ${pc.dim('Version:')}   ${pc.cyan(versionTag)}`)
 		clack.log.message(
 			`  ${pc.dim('Size:')}      ${(zipBuffer.length / 1024).toFixed(2)} KB`,
 		)
@@ -310,6 +405,7 @@ export async function uploadCommand(
 				projectId: selectedProjId as string,
 				taskName: finalTaskName,
 				checkSum: checksum,
+				versionTag,
 				schema: schema || undefined,
 			}),
 		)
@@ -327,8 +423,14 @@ export async function uploadCommand(
 		})
 
 		if (!response.ok) {
-			const errorText = await response.text()
-			throw new Error(`Upload failed: ${errorText}`)
+			const rawError = await response.json().catch(() => null)
+			const parsedError = apiErrorSchema.safeParse(rawError)
+			throw new Error(
+				formatUploadError(
+					response.status,
+					parsedError.success ? parsedError.data : null,
+				),
+			)
 		}
 
 		const rawResult = await response.json()
@@ -343,23 +445,22 @@ export async function uploadCommand(
 
 		const result = resultParseResult.data
 
-		uploadSpinner.stop('Task uploaded successfully!')
+		uploadSpinner.stop(formatUploadSuccess(result.created))
 
 		clack.log.message('')
 		clack.log.success('Upload details:')
 		clack.log.message(`  ${pc.dim('Task:')} ${pc.cyan(finalTaskName)}`)
+		clack.log.message(`  ${pc.dim('Version:')} ${pc.cyan(result.versionTag)}`)
 		clack.log.message(`  ${pc.dim('Workspace:')} ${pc.cyan(selectedWs.name)}`)
 		clack.log.message(`  ${pc.dim('Project:')} ${pc.cyan(selectedProj.name)}`)
 		clack.log.message(
 			`  ${pc.dim('Size:')} ${(zipBuffer.length / 1024).toFixed(2)} KB`,
 		)
 		clack.log.message(`  ${pc.dim('Checksum:')} ${checksum.slice(0, 16)}...`)
-		if (result.taskId) {
-			clack.log.message(`  ${pc.dim('Task ID:')} ${pc.green(result.taskId)}`)
-		}
+		clack.log.message(`  ${pc.dim('Task ID:')} ${pc.green(result.taskId)}`)
 
 		outro(
-			`${pc.green('✓')} Task uploaded!\n\n` +
+			`${pc.green('✓')} ${formatUploadSuccess(result.created)}\n\n` +
 				`Configure triggers in the dashboard`,
 		)
 	} catch (err) {

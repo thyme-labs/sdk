@@ -159,15 +159,26 @@ thyme upload my-task --workspace ws_123abc --project proj_456def
 
 # Short form
 thyme upload my-task -w ws_123abc -p proj_456def
+
+# Explicit immutable version (required for non-interactive repeat uploads)
+thyme upload my-task -w ws_123abc -p proj_456def --tag beta
 ```
 
 **Options:**
 
 - `-w, --workspace <id>` — workspace ID to upload to (skips the interactive prompt).
 - `-p, --project <id>` — project ID to upload to (skips the interactive prompt).
+- `-t, --tag <tag>` — immutable function version tag (skips the version prompt).
 
 The CLI fetches your available workspaces and projects from the API and, if the flags
-are omitted, walks you through a workspace → project picker.
+are omitted, walks you through a workspace → project picker. A new function name defaults
+to `v1`; an existing name prompts for a tag and suggests the next unused numeric tag.
+
+Tags are canonical lowercase, 1–32 characters, match
+`^[a-z0-9][a-z0-9._-]{0,31}$`, and cannot be reused (including after deletion). `latest` is
+reserved for the Console's dynamic newest-upload badge. Repeating the same active
+name/tag/checksum is idempotent and reuses the existing function ID; reusing a tag with
+different code is a conflict.
 
 **Upload pipeline:** esbuild bundles the task to a single ESM file → the Zod schema is
 extracted to JSON Schema → `source.ts` + `bundle.js` are zipped with a sha256 checksum
