@@ -1,5 +1,13 @@
 # @thyme-labs/cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 8f3621e: Add workspace-scoped Functions management commands and a raw management API
+  proxy, including multi-workspace credentials, automatic idempotency keys, and
+  retry handling for safe requests.
+
 ## 0.6.0
 
 ### Minor Changes
