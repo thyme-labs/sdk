@@ -16,6 +16,8 @@ export type JsonObject = { [key: string]: JsonValue }
  * Context provided to task execution
  */
 export interface ThymeContext<TArgs> {
+	/** Address that will execute returned calls on-chain */
+	account: Address
 	/**
 	 * User-provided arguments, already validated **and transformed** against the
 	 * task's `schema` by `defineTask` before `run` is called (e.g. `z.address()`

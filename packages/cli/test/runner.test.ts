@@ -13,6 +13,8 @@ import { checkDeno, runCallbackInDeno, runInDeno } from '../src/deno/runner'
 let denoUsable = false
 let fixtureRoot = ''
 let taskCounter = 0
+const TEST_ACCOUNT = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'
+const previousSimulateAccount = process.env.SIMULATE_ACCOUNT
 
 const makeTask = (body: string) => {
 	const dir = join(fixtureRoot, 'tasks', `t${taskCounter++}`)
@@ -35,6 +37,7 @@ const makeFullTask = (source: string) => {
 }
 
 beforeAll(async () => {
+	process.env.SIMULATE_ACCOUNT = TEST_ACCOUNT
 	if (!(await checkDeno())) return
 
 	// A real Thyme project has node_modules with viem installed; build a minimal
@@ -76,6 +79,11 @@ beforeAll(async () => {
 
 afterAll(() => {
 	if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true })
+	if (previousSimulateAccount === undefined) {
+		delete process.env.SIMULATE_ACCOUNT
+	} else {
+		process.env.SIMULATE_ACCOUNT = previousSimulateAccount
+	}
 })
 
 describe('checkDeno', () => {
@@ -103,6 +111,28 @@ describe('runInDeno (integration, requires Deno)', () => {
 		expect(result.logs.some((l) => l.includes('hello world'))).toBe(true)
 		expect(typeof result.executionTime).toBe('number')
 		expect(result.rpcRequestCount).toBe(0)
+	}, 60_000)
+
+	test('exposes the checksummed execution account as ctx.account', async () => {
+		if (!denoUsable) return
+		const { taskPath, root } = makeTask(
+			`    return { canExec: false, message: ctx.account }`,
+		)
+		const result = await runInDeno(
+			taskPath,
+			{},
+			{
+				memory: 128,
+				network: false,
+				env: { SIMULATE_ACCOUNT: TEST_ACCOUNT.toLowerCase() },
+			},
+			root,
+		)
+		expect(result.success).toBe(true)
+		expect(result.result).toEqual({
+			canExec: false,
+			message: TEST_ACCOUNT,
+		})
 	}, 60_000)
 
 	test('serializes BigInt values (matches the production wrapper)', async () => {
@@ -145,6 +175,7 @@ describe('runInDeno (integration, requires Deno)', () => {
         my: ctx.secrets.MY_SECRET ?? null,
         authHidden: ctx.secrets.THYME_AUTH_TOKEN ?? null,
         rpcHidden: ctx.secrets.RPC_URL ?? null,
+		accountHidden: ctx.secrets.SIMULATE_ACCOUNT ?? null,
       }),
     }`,
 		)
@@ -158,6 +189,7 @@ describe('runInDeno (integration, requires Deno)', () => {
 					MY_SECRET: 'visible',
 					THYME_AUTH_TOKEN: 'should-be-hidden',
 					RPC_URL: 'http://localhost:8545',
+					SIMULATE_ACCOUNT: TEST_ACCOUNT,
 				},
 			},
 			root,
@@ -167,6 +199,7 @@ describe('runInDeno (integration, requires Deno)', () => {
 		expect(payload.my).toBe('visible')
 		expect(payload.authHidden).toBeNull()
 		expect(payload.rpcHidden).toBeNull()
+		expect(payload.accountHidden).toBeNull()
 	}, 60_000)
 
 	test('exposes mutable executable storage', async () => {

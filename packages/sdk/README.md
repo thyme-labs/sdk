@@ -210,9 +210,9 @@ export default defineTask({
 ```
 
 For local runs, put task-specific secrets in `functions/<task>/.env`. The reserved keys
-`THYME_API_URL`, `THYME_AUTH_TOKEN`, and `RPC_URL` are not exposed through
-`ctx.secrets`. In the cloud, secrets are bound to the executable in the Console and
-injected at runtime.
+`THYME_API_URL`, `THYME_AUTH_TOKEN`, `RPC_URL`, and `SIMULATE_ACCOUNT` are not exposed
+through `ctx.secrets`. `SIMULATE_ACCOUNT` is exposed separately as `ctx.account`. In the
+cloud, secrets are bound to the executable in the Console and injected at runtime.
 
 ## Task Storage
 
@@ -394,6 +394,7 @@ The task definition (for type inference).
 
 Context provided to task execution:
 
+- `account` — viem `Address` that will execute returned calls on-chain.
 - `args` — user-provided arguments, validated against your schema and typed accordingly.
 - `client` — viem `PublicClient` for reading blockchain data (reads only).
 - `logger` — logger for task output (`info`/`warn`/`error`); captured to the dashboard.

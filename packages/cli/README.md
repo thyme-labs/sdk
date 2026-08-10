@@ -68,15 +68,16 @@ thyme run my-task --persist
 Requires Deno to be installed (https://deno.land/); the CLI checks `deno --version`
 before running. The task executes in a hardened Deno subprocess. Environment is loaded
 from the project root `.env` first, then the task-local `functions/<task>/.env`
-(task-local values override root values).
+(task-local values override root values). `SIMULATE_ACCOUNT` is required for every local
+run and is exposed to task code as the checksummed `ctx.account`.
 
 **Options:**
 
 - `--simulate` — after `run()` returns `calls`, dry-run them on-chain with viem's
   `simulateCalls` (`eth_simulateV1`). If the RPC doesn't support batch simulation, the
   CLI falls back to per-call `eth_call` + `estimateGas` and warns that dependent-call
-  failures can't be detected in fallback mode. Requires `RPC_URL` and
-  `SIMULATE_ACCOUNT`.
+  failures can't be detected in fallback mode. Requires `RPC_URL`; the run already
+  requires `SIMULATE_ACCOUNT` for `ctx.account`.
 - `--persist` — write the produced `ctx.storage` back to `storage.json`. By default the
   produced storage is printed and not written back.
 
@@ -273,7 +274,7 @@ Create a `.env` file in your project root for CLI/project defaults:
 # RPC URL for blockchain reads and simulation
 RPC_URL=https://eth-sepolia.g.alchemy.com/v2/your-key
 
-# Account used as the sender for --simulate
+# Account exposed as ctx.account and used as the sender for --simulate
 SIMULATE_ACCOUNT=0x742d35Cc6634C0532925a3b844Bc454e4438f44e
 
 # Cloud API URL (optional; defaults to https://functions.thymelabs.io/http)
@@ -296,8 +297,9 @@ Notes:
 For `thyme run`, the CLI also loads `functions/<task>/.env` after task selection.
 Task-local values override root `.env` values for that task and are exposed as
 `ctx.secrets`, **except** the reserved keys `THYME_API_URL`, `THYME_AUTH_TOKEN`, and
-`RPC_URL`, which are stripped. `SIMULATE_ACCOUNT` can be set in either root `.env` or
-`functions/<task>/.env` for `thyme run --simulate`.
+`RPC_URL`, and `SIMULATE_ACCOUNT`, which are stripped. `SIMULATE_ACCOUNT` can be set in
+either root `.env` or `functions/<task>/.env` and becomes `ctx.account` for every local
+run.
 
 Task `.env` files are gitignored. Commit `functions/<task>/.env.example` templates
 instead.

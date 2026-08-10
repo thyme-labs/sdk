@@ -23,7 +23,7 @@ const CLOUD_LIFECYCLE_CALLBACKS_SOURCE = `[${LIFECYCLE_CALLBACK_NAMES.map(
  */
 export const CLOUD_TASK_RUNNER_SOURCE = `
 import task from './task.js';
-import { createPublicClient, http } from 'npm:viem@2.46.3';
+import { createPublicClient, getAddress, http, isAddress } from 'npm:viem@2.46.3';
 
 // BigInt-safe JSON.stringify
 const originalStringify = JSON.stringify;
@@ -61,6 +61,11 @@ const client = createPublicClient({
 });
 
 const args = JSON.parse(Deno.env.get('TASK_ARGS') ?? '{}');
+const rawAccount = Deno.env.get('THYME_ACCOUNT');
+if (!rawAccount || !isAddress(rawAccount)) {
+  throw new Error('THYME_ACCOUNT must be a valid Ethereum address');
+}
+const account = getAddress(rawAccount);
 
 function readSecrets() {
   try {
@@ -144,6 +149,7 @@ const secrets = readSecrets();
 const storage = await readStorage();
 
 const context = {
+  account,
   args,
   userArgs: args,
   client,
