@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - dev
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -47,7 +48,32 @@ jobs:
       - name: Run tests
         run: bun run test
 
-      - name: Create Release Pull Request or Publish
+      - name: Create dev snapshot changeset
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          cat > .changeset/dev-snapshot.md <<'EOF'
+          ---
+          '@thyme-labs/sdk': patch
+          '@thyme-labs/cli': patch
+          ---
+
+          Publish a development snapshot from the dev branch.
+          EOF
+
+      - name: Version dev snapshot
+        if: github.ref == 'refs/heads/dev'
+        run: bunx @changesets/cli version --snapshot dev
+
+      - name: Build versioned dev packages
+        if: github.ref == 'refs/heads/dev'
+        run: bun run build
+
+      - name: Publish dev snapshot
+        if: github.ref == 'refs/heads/dev'
+        run: bunx @changesets/cli publish --tag dev --provenance
+
+      - name: Create Stable Release Pull Request or Publish
+        if: github.ref == 'refs/heads/master'
         id: changesets
         uses: changesets/action@v1
         with:
