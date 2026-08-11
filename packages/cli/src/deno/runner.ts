@@ -7,6 +7,8 @@ import {
 	type LifecycleCallbackName,
 } from '@thyme-labs/sdk/lifecycle'
 import { TASK_RUNTIME_OUTPUT_PREFIXES } from '@thyme-labs/sdk/task-runtime'
+import type { Address } from 'viem'
+import { getAddress, isAddress } from 'viem'
 
 type JsonValue =
 	| null
@@ -22,6 +24,7 @@ export interface TaskConfig {
 	memory: number // MB
 	network: boolean
 	rpcUrl?: string // RPC URL for public client
+	account?: Address // address that will execute returned calls
 	env?: Record<string, string> // runtime env loaded from root/task .env files
 }
 
@@ -155,6 +158,7 @@ const RESERVED_SECRET_KEYS = new Set([
 	'THYME_API_URL',
 	'THYME_AUTH_TOKEN',
 	'RPC_URL',
+	'SIMULATE_ACCOUNT',
 ])
 const UNSAFE_SECRET_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
@@ -171,6 +175,24 @@ function buildSecrets(
 	}
 
 	return secrets
+}
+
+function resolveTaskAccount(config: TaskConfig): Address {
+	const rawAccount =
+		config.account ??
+		config.env?.SIMULATE_ACCOUNT ??
+		process.env.SIMULATE_ACCOUNT
+	if (!rawAccount) {
+		throw new Error(
+			'SIMULATE_ACCOUNT is required for local task execution (it becomes ctx.account)',
+		)
+	}
+	if (!isAddress(rawAccount)) {
+		throw new Error(
+			`SIMULATE_ACCOUNT is not a valid Ethereum address: ${rawAccount}`,
+		)
+	}
+	return getAddress(rawAccount)
 }
 
 /**
@@ -298,6 +320,7 @@ function buildDenoFlags(
  */
 function buildContextPreamble(
 	safeTaskPath: string,
+	safeAccount: string,
 	safeArgsJson: string,
 	safeSecretsJson: string,
 	safeStorageJson: string,
@@ -420,6 +443,7 @@ function assertJsonStorage(value, path = '$') {
 }
 
 const context = {
+	account: ${safeAccount},
 	args: ${safeArgsJson},
 	get client() {
 		return getClient();
@@ -471,6 +495,18 @@ export async function runInDeno(
 	}
 
 	const runtimeEnv = config.env ?? {}
+	let account: Address
+	try {
+		account = resolveTaskAccount(config)
+	} catch (err) {
+		return {
+			success: false,
+			logs: [],
+			error: sanitizeErrorMessage(
+				err instanceof Error ? err.message : String(err),
+			),
+		}
+	}
 	const safeSecrets = JSON.stringify(buildSecrets(runtimeEnv))
 	const safeStorageJson = JSON.stringify(safeStorage)
 
@@ -482,6 +518,7 @@ export async function runInDeno(
 
 	const execScript = `${buildContextPreamble(
 		safeTaskPath,
+		JSON.stringify(account),
 		JSON.stringify(safeArgs),
 		safeSecrets,
 		safeStorageJson,
@@ -718,6 +755,18 @@ export async function runCallbackInDeno(
 	}
 
 	const runtimeEnv = config.env ?? {}
+	let account: Address
+	try {
+		account = resolveTaskAccount(config)
+	} catch (err) {
+		return {
+			success: false,
+			logs: [],
+			error: sanitizeErrorMessage(
+				err instanceof Error ? err.message : String(err),
+			),
+		}
+	}
 	const safeSecrets = JSON.stringify(buildSecrets(runtimeEnv))
 	const safeStorageJson = JSON.stringify(safeStorage)
 	const rpcUrl = config.rpcUrl ?? runtimeEnv.RPC_URL
@@ -727,6 +776,7 @@ export async function runCallbackInDeno(
 
 	const execScript = `${buildContextPreamble(
 		safeTaskPath,
+		JSON.stringify(account),
 		JSON.stringify(safeArgs),
 		safeSecrets,
 		safeStorageJson,

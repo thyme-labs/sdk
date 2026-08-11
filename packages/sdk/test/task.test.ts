@@ -8,6 +8,7 @@ const VITALIK = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'
 // Minimal stub context; args is overridden per-test.
 function ctx<T>(args: T): ThymeContext<T> {
 	return {
+		account: VITALIK,
 		args,
 		// biome-ignore lint/suspicious/noExplicitAny: minimal stub context for the unit test
 		client: {} as any,
@@ -136,6 +137,7 @@ describe('defineTask', () => {
 		})
 		// biome-ignore lint/suspicious/noExplicitAny: context with a throwing getter
 		const c: any = {
+			account: VITALIK,
 			args: { n: 1 },
 			get client() {
 				clientReads++

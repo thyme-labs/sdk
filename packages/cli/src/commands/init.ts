@@ -93,7 +93,7 @@ export async function initCommand(projectName?: string) {
 		const envExample = `# Project-wide defaults for local task execution
 # Task-local values can be set in functions/<task>/.env and override these.
 
-# Simulation settings (for --simulate flag)
+# Local execution account (also used for --simulate) and RPC
 RPC_URL=https://eth-sepolia.g.alchemy.com/v2/your-key
 SIMULATE_ACCOUNT=0x742d35Cc6634C0532925a3b844Bc454e4438f44e
 

@@ -25,5 +25,7 @@ describe('task runtime contract', () => {
 		}
 		expect(CLOUD_TASK_RUNNER_SOURCE).toContain('await task.run(context)')
 		expect(CLOUD_TASK_RUNNER_SOURCE).toContain("phase === 'callback'")
+		expect(CLOUD_TASK_RUNNER_SOURCE).toContain("Deno.env.get('THYME_ACCOUNT')")
+		expect(CLOUD_TASK_RUNNER_SOURCE).toContain('account,')
 	})
 })

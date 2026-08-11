@@ -156,7 +156,7 @@ export default defineTask({
 # Values here override project root .env for this task.
 MY_API_KEY=
 
-# Optional: set a task-specific simulate account.
+# Optional: override the project-wide ctx.account for this task.
 # SIMULATE_ACCOUNT=0x742d35Cc6634C0532925a3b844Bc454e4438f44e
 `
 
