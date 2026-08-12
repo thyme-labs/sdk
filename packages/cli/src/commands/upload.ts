@@ -10,6 +10,12 @@ import {
 	resolveUploadVersionTag,
 	validateVersionTag,
 } from '../utils/function-versioning'
+import {
+	spinner as createSpinner,
+	isInteractive,
+	promptConfirm,
+	promptSelect,
+} from '../utils/interactive'
 import { selectManagementCredential } from '../utils/management-api'
 import { extractSchemaFromTask } from '../utils/schema-extractor'
 import {
@@ -142,21 +148,20 @@ export async function uploadCommand(
 			process.exit(1)
 		}
 
-		const selected = await clack.select({
-			message: 'Select a task to upload:',
-			options: tasks.map((task) => ({ value: task, label: task })),
-		})
-
-		if (clack.isCancel(selected)) {
-			clack.cancel('Operation cancelled')
-			process.exit(0)
-		}
-
-		finalTaskName = selected as string
+		finalTaskName = await promptSelect(
+			{
+				message: 'Select a task to upload:',
+				options: tasks.map((task) => ({ value: task, label: task })),
+			},
+			{
+				what: 'A task name',
+				hint: `Pass it as an argument: \`thyme upload <task>\`. Available: ${tasks.join(', ')}`,
+			},
+		)
 	}
 
 	// Fetch user's workspaces and projects
-	const wsSpinner = clack.spinner()
+	const wsSpinner = createSpinner()
 	wsSpinner.start('Fetching workspaces...')
 
 	let workspaces: z.infer<typeof workspaceSchema>[] = []
@@ -214,20 +219,21 @@ export async function uploadCommand(
 		selectedWsId = workspaces?.[0]?.id
 		clack.log.info(`Using workspace: ${pc.cyan(workspaces?.[0]?.name)}`)
 	} else {
-		const selected = await clack.select({
-			message: 'Select a workspace:',
-			options: workspaces.map((ws) => ({
-				value: ws.id,
-				label: `${ws.name} ${pc.dim(`(${ws.role})`)}`,
-			})),
-		})
-
-		if (clack.isCancel(selected)) {
-			clack.cancel('Operation cancelled')
-			process.exit(0)
-		}
-
-		selectedWsId = selected as string
+		selectedWsId = await promptSelect(
+			{
+				message: 'Select a workspace:',
+				options: workspaces.map((ws) => ({
+					value: ws.id,
+					label: `${ws.name} ${pc.dim(`(${ws.role})`)}`,
+				})),
+			},
+			{
+				what: 'A workspace',
+				hint: `Pass \`--workspace <id>\`. Available: ${workspaces
+					.map((ws) => `${ws.id} (${ws.name})`)
+					.join(', ')}`,
+			},
+		)
 	}
 
 	const selectedWs = workspaces.find((ws) => ws.id === selectedWsId)!
@@ -259,20 +265,21 @@ export async function uploadCommand(
 		}
 		clack.log.message('')
 
-		const selected = await clack.select({
-			message: 'Select a project:',
-			options: projects.map((p) => ({
-				value: p.id,
-				label: `${p.name} ${pc.dim(`(${p.id})`)}`,
-			})),
-		})
-
-		if (clack.isCancel(selected)) {
-			clack.cancel('Operation cancelled')
-			process.exit(0)
-		}
-
-		selectedProjId = selected as string
+		selectedProjId = await promptSelect(
+			{
+				message: 'Select a project:',
+				options: projects.map((p) => ({
+					value: p.id,
+					label: `${p.name} ${pc.dim(`(${p.id})`)}`,
+				})),
+			},
+			{
+				what: 'A project',
+				hint: `Pass \`--project <id>\`. Available: ${projects
+					.map((p) => `${p.id} (${p.name})`)
+					.join(', ')}`,
+			},
+		)
 	}
 
 	const selectedProj = projects.find((p) => p.id === selectedProjId)!
@@ -291,7 +298,7 @@ export async function uploadCommand(
 		process.exit(1)
 	}
 
-	const versionSpinner = clack.spinner()
+	const versionSpinner = createSpinner()
 	versionSpinner.start('Checking function versions...')
 	let versionTag: string
 	try {
@@ -329,7 +336,7 @@ export async function uploadCommand(
 			providedTag,
 			familyExists,
 			suggestedVersionTag: parsed.data.versioning.suggestedVersionTag,
-			isInteractive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+			isInteractive: isInteractive(),
 			prompt: async (suggestedVersionTag) => {
 				const selected = await clack.text({
 					message: 'Version tag',
@@ -356,7 +363,7 @@ export async function uploadCommand(
 		process.exit(1)
 	}
 
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Bundling task...')
 
 	try {
@@ -403,16 +410,16 @@ export async function uploadCommand(
 		clack.log.message(`  ${pc.dim('Checksum:')}  ${checksum.slice(0, 16)}...`)
 		clack.log.message('')
 
-		const confirm = await clack.confirm({
+		const confirmed = await promptConfirm({
 			message: 'Proceed with upload?',
 		})
 
-		if (clack.isCancel(confirm) || !confirm) {
+		if (!confirmed) {
 			clack.cancel('Upload cancelled')
 			process.exit(0)
 		}
 
-		const uploadSpinner = clack.spinner()
+		const uploadSpinner = createSpinner()
 		uploadSpinner.start('Uploading to cloud...')
 
 		// Create form data

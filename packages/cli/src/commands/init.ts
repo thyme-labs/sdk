@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { clack, error, intro, outro, pc } from '../utils/ui'
+import { spinner as createSpinner, promptText } from '../utils/interactive'
+import { error, intro, outro, pc } from '../utils/ui'
 
 export async function initCommand(projectName?: string) {
 	intro('Thyme CLI - Initialize Project')
@@ -9,22 +10,26 @@ export async function initCommand(projectName?: string) {
 	// Prompt for project name if not provided
 	let finalProjectName = projectName
 	if (!finalProjectName) {
-		const name = await clack.text({
-			message: 'What is your project name?',
-			placeholder: 'my-thyme-project',
-			validate: (value) => {
-				if (!value) return 'Project name is required'
-				if (!/^[a-z0-9-]+$/.test(value))
-					return 'Project name must be lowercase alphanumeric with hyphens'
+		finalProjectName = await promptText(
+			{
+				message: 'What is your project name?',
+				placeholder: 'my-thyme-project',
+				validate: (value) => {
+					if (!value) return 'Project name is required'
+					if (!/^[a-z0-9-]+$/.test(value))
+						return 'Project name must be lowercase alphanumeric with hyphens'
+				},
 			},
-		})
+			{
+				what: 'A project name',
+				hint: 'Pass it as an argument: `thyme init <name>`',
+			},
+		)
+	}
 
-		if (clack.isCancel(name)) {
-			clack.cancel('Operation cancelled')
-			process.exit(0)
-		}
-
-		finalProjectName = name as string
+	if (!/^[a-z0-9-]+$/.test(finalProjectName)) {
+		error('Project name must be lowercase alphanumeric with hyphens')
+		process.exit(1)
 	}
 
 	const projectPath = join(process.cwd(), finalProjectName)
@@ -35,7 +40,7 @@ export async function initCommand(projectName?: string) {
 		process.exit(1)
 	}
 
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Creating project structure...')
 
 	try {
