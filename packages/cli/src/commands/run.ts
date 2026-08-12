@@ -25,6 +25,7 @@ import {
 	loadEnvFile,
 	resolveLoadedEnv,
 } from '../utils/env'
+import { spinner as createSpinner, promptSelect } from '../utils/interactive'
 import {
 	discoverTasks,
 	getTaskArgsPath,
@@ -50,6 +51,7 @@ interface RunOptions {
 	simulate?: boolean
 	persist?: boolean
 	simulateCallbacks?: boolean
+	callback?: string
 }
 
 export async function runCommand(taskName?: string, options: RunOptions = {}) {
@@ -92,17 +94,16 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 			process.exit(1)
 		}
 
-		const selected = await clack.select({
-			message: 'Select a task to run:',
-			options: tasks.map((task) => ({ value: task, label: task })),
-		})
-
-		if (clack.isCancel(selected)) {
-			clack.cancel('Operation cancelled')
-			process.exit(0)
-		}
-
-		finalTaskName = selected as string
+		finalTaskName = await promptSelect(
+			{
+				message: 'Select a task to run:',
+				options: tasks.map((task) => ({ value: task, label: task })),
+			},
+			{
+				what: 'A task name',
+				hint: `Pass it as an argument: \`thyme run <task>\`. Available: ${tasks.join(', ')}`,
+			},
+		)
 	}
 
 	let taskPath: string
@@ -162,7 +163,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		}
 	}
 
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Executing task in Deno sandbox...')
 
 	// Run task
@@ -267,7 +268,9 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 
 	// Simulate onSuccess/onFail with a fabricated receipt, since `thyme run`
 	// never actually submits a call and there is no real outcome to react to.
-	if (options.simulateCallbacks) {
+	// `--callback <outcome>` names the outcome up front, which is what makes the
+	// flow usable without a picker.
+	if (options.simulateCallbacks || options.callback) {
 		if (!result.result?.canExec) {
 			log('')
 			info(
@@ -284,6 +287,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 				postRunStorage: producedStorage,
 				definedCallbacks: result.definedCallbacks ?? [],
 				persist: options.persist,
+				requestedOutcome: options.callback,
 			})
 		}
 	}
@@ -314,7 +318,7 @@ async function simulateCalls(
 		return
 	}
 
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Simulating on-chain...')
 
 	try {
@@ -353,7 +357,7 @@ async function simulateCalls(
 		)
 
 		// Simulate all calls at once using viem's simulateCalls
-		const simulationSpinner = clack.spinner()
+		const simulationSpinner = createSpinner()
 		simulationSpinner.start('Running simulation...')
 
 		let usedFallback = false
@@ -410,7 +414,7 @@ async function simulateCalls(
 			log('')
 
 			usedFallback = true
-			const fallbackSpinner = clack.spinner()
+			const fallbackSpinner = createSpinner()
 			fallbackSpinner.start('Running individual simulations...')
 
 			// Simulate each call individually using eth_call
@@ -590,6 +594,7 @@ async function simulateCallbacksFlow(params: {
 	postRunStorage: unknown
 	definedCallbacks: string[]
 	persist?: boolean
+	requestedOutcome?: string
 }) {
 	const {
 		taskPath,
@@ -601,6 +606,7 @@ async function simulateCallbacksFlow(params: {
 		postRunStorage,
 		definedCallbacks,
 		persist,
+		requestedOutcome,
 	} = params
 
 	const hasOnSuccess = definedCallbacks.includes('onSuccess')
@@ -667,23 +673,42 @@ async function simulateCallbacksFlow(params: {
 	}
 
 	log('')
-	const SKIP = '__skip__'
-	const selected = await clack.select({
-		message: 'Simulate a callback outcome?',
-		options: [
-			...outcomes.map((o) => ({ value: o.value, label: o.label })),
-			{ value: SKIP, label: 'Skip' },
-		],
-	})
+	const SKIP = 'skip'
+	const available = outcomes.map((outcome) => outcome.value)
 
-	if (clack.isCancel(selected) || selected === SKIP) {
-		return
+	let selected: string
+	if (requestedOutcome !== undefined) {
+		const normalized = requestedOutcome.trim()
+		if (normalized === SKIP) return
+		if (!available.includes(normalized)) {
+			error(
+				`Unknown --callback value "${requestedOutcome}". This task supports: ${available.join(', ')}`,
+			)
+			process.exit(2)
+		}
+		selected = normalized
+		info(`Simulating callback outcome: ${pc.cyan(selected)}`)
+	} else {
+		selected = await promptSelect(
+			{
+				message: 'Simulate a callback outcome?',
+				options: [
+					...outcomes.map((o) => ({ value: o.value, label: o.label })),
+					{ value: SKIP, label: 'Skip' },
+				],
+			},
+			{
+				what: 'A callback outcome',
+				hint: `Pass \`--callback <outcome>\` with one of: ${available.join(', ')}`,
+			},
+		)
+		if (selected === SKIP) return
 	}
 
 	const chosen = outcomes.find((o) => o.value === selected)
 	if (!chosen) return
 
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start(`Running ${chosen.name} in Deno sandbox...`)
 
 	const invocation: CallbackInvocation = {

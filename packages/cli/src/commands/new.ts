@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { spinner as createSpinner, promptText } from '../utils/interactive'
 import { isThymeProject, validateTaskName } from '../utils/tasks'
-import { clack, error, intro, outro, pc } from '../utils/ui'
+import { error, intro, outro, pc } from '../utils/ui'
 
 export async function newCommand(taskName?: string) {
 	intro('Thyme CLI - Create New Task')
@@ -27,24 +28,23 @@ export async function newCommand(taskName?: string) {
 			process.exit(1)
 		}
 	} else {
-		const name = await clack.text({
-			message: 'What is your task name?',
-			placeholder: 'my-task',
-			validate: (value) => {
-				try {
-					validateTaskName(value)
-				} catch (err) {
-					return err instanceof Error ? err.message : String(err)
-				}
+		finalTaskName = await promptText(
+			{
+				message: 'What is your task name?',
+				placeholder: 'my-task',
+				validate: (value) => {
+					try {
+						validateTaskName(value)
+					} catch (err) {
+						return err instanceof Error ? err.message : String(err)
+					}
+				},
 			},
-		})
-
-		if (clack.isCancel(name)) {
-			clack.cancel('Operation cancelled')
-			process.exit(0)
-		}
-
-		finalTaskName = name as string
+			{
+				what: 'A task name',
+				hint: 'Pass it as an argument: `thyme new <name>`',
+			},
+		)
 	}
 
 	const taskPath = join(projectRoot, 'functions', finalTaskName)
@@ -55,7 +55,7 @@ export async function newCommand(taskName?: string) {
 		process.exit(1)
 	}
 
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Creating task...')
 
 	try {
