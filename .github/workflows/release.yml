@@ -36,11 +36,21 @@ jobs:
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@11.17.0
 
+      # Pinned for the same reason as ci.yml: an unpinned setup-bun re-downloads
+      # Bun on every run and can fail the job outright on a CDN hiccup. Here that
+      # would abort a publish.
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
+
+      # dev is pushed to directly, so this workflow is the only gate on those
+      # commits. Lint here too, or nothing checks it before a snapshot ships.
+      - name: Run Biome
+        run: bun run lint
 
       - name: Build packages
         run: bun run build
