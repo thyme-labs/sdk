@@ -13,6 +13,71 @@ the Console can be managed through typed commands or the raw `thyme api` command
 npm install -g @thyme-labs/cli
 ```
 
+## Non-interactive use (CI and agents)
+
+Every command runs without a terminal. Prompts are only ever reached when a TTY is
+attached and no flag already supplied the value.
+
+```bash
+# Either position works
+thyme --ci upload my-task -w ws_123abc -p proj_456def --tag v2
+thyme upload my-task -w ws_123abc -p proj_456def --tag v2 --ci
+```
+
+**Global options** (available on `init`, `new`, `run`, `login`, and `upload`, and on the
+root command for every subcommand):
+
+- `--ci` — never prompt. Confirmations are answered yes; any other missing value is an
+  immediate error.
+- `-y, --yes` — answer confirmations yes but keep the other prompts. Useful on a
+  terminal when you only want to skip `Proceed with upload?`.
+
+**Automatic detection.** Non-interactive mode also turns itself on when any of `CI`,
+`CONTINUOUS_INTEGRATION`, `THYME_CI`, or `THYME_NON_INTERACTIVE` is set to anything
+other than `0`/`false`/`off`/`no`/empty, or when stdin/stdout is not a terminal (a pipe,
+a container without a TTY, a subprocess). `--ci` is only needed to force the behaviour
+where none of that applies.
+
+**Failure contract.** A missing value exits with **code 2** and a message naming the
+flag that supplies it, along with the accepted values:
+
+```
+■  A workspace is required when prompts are unavailable (--ci was passed).
+│  Pass `--workspace <id>`. Available: ws_123abc (Acme), ws_456def (Acme Staging)
+```
+
+Exit code 1 stays reserved for genuine runtime failures (auth, network, a failed task,
+a rejected upload), so a script can tell "you forgot a flag" from "it broke".
+
+**Every prompt and its flag:**
+
+| Command | Prompt | Non-interactive path |
+| --- | --- | --- |
+| `init` | project name | `thyme init <name>` argument |
+| `new` | task name | `thyme new <name>` argument |
+| `run` | task picker | `thyme run <task>` argument |
+| `run --simulate-callbacks` | outcome picker | `--callback <outcome>` |
+| `login` | re-authenticate? | answered yes |
+| `login --token` | paste API key | piped on stdin |
+| `login --rewrite-api-url` | API URL | `--api-url <url>` |
+| `upload` | task picker | `thyme upload <task>` argument |
+| `upload` | workspace picker | `-w, --workspace <id>` |
+| `upload` | project picker | `-p, --project <id>` |
+| `upload` | version tag | `-t, --tag <tag>` |
+| `upload` | proceed? | answered yes |
+
+`list`, `logout`, `api-url`, `api`, and the management commands never prompt.
+
+Spinners collapse to plain single-line output off a TTY, so CI logs stay readable.
+
+A typical pipeline authenticates through the environment rather than `thyme login`:
+
+```bash
+export THYME_AUTH_TOKEN="$THYME_API_KEY"
+export THYME_API_URL=https://functions.thymelabs.io/http
+thyme upload my-task --ci -w "$THYME_WORKSPACE_ID" -p "$THYME_PROJECT_ID" --tag "v$BUILD_NUMBER"
+```
+
 ## Commands
 
 ### `thyme init [name]`
@@ -25,7 +90,8 @@ cd my-project
 npm install
 ```
 
-`name` must match `^[a-z0-9-]+$` (you'll be prompted if omitted). Creates an empty
+`name` must match `^[a-z0-9-]+$`, whether it is passed as an argument or entered at the
+prompt (you'll be prompted if omitted, unless prompts are unavailable). Creates an empty
 `functions/` directory, plus `package.json` (`type: module`, a `dev` script that runs
 `thyme run`, deps `@thyme-labs/sdk` + `viem` + `zod`, devDeps `@thyme-labs/cli` +
 `typescript`), `tsconfig.json`, `.env.example`, `.gitignore`, and `README.md`.
@@ -80,6 +146,21 @@ run and is exposed to task code as the checksummed `ctx.account`.
   requires `SIMULATE_ACCOUNT` for `ctx.account`.
 - `--persist` — write the produced `ctx.storage` back to `storage.json`. By default the
   produced storage is printed and not written back.
+- `--simulate-callbacks` — fabricate a receipt and invoke `onSuccess`/`onFail` locally.
+  `thyme run` never submits a call, so there is no real outcome to react to; this picks
+  one. On a terminal it shows a picker of the outcomes the task actually defines.
+- `--callback <outcome>` — choose that outcome up front instead of picking it, and
+  implies `--simulate-callbacks`. One of `onSuccess`, `onFail:reverted`,
+  `onFail:submit`, `onFail:timeout`, or `skip`. An outcome the task doesn't define is an
+  error listing the ones it does.
+
+```bash
+# Exercise onSuccess without a picker
+thyme run my-task --callback onSuccess
+
+# Exercise the timeout branch of onFail
+thyme run my-task --callback onFail:timeout
+```
 
 Output includes the task's logs, the result (`canExec`/`calls`, or the skip
 `message`), execution stats (duration, memory, RPC request count), and the produced
@@ -125,12 +206,25 @@ Open the URL on another device and enter the code to approve.
 
 **Token flow (`--token`):** paste an API key you generated in
 **[Console → API Keys](https://functions.thymelabs.io/dashboard/api-keys) → Create Key**
-(the full key is shown once). The key must be at least 10 characters.
+(the full key is shown once). The key must be at least 10 characters. Without a terminal
+the key is read from stdin instead of prompted, so the key never lands in your shell
+history or the process list:
+
+```bash
+echo "$THYME_API_KEY" | thyme login --token
+```
+
+**Non-interactive runs:** most pipelines should skip `thyme login` entirely and export
+`THYME_AUTH_TOKEN` — every later command reads it. If you do need to log in, use
+`--token` (as above) or `--browserless`, which prints a pairing code and polls. The
+default browser flow fails immediately without a terminal rather than polling for five
+minutes for an approval that can't happen.
 
 **Options:**
 
 - `--browserless` — use the pairing-code flow instead of opening a browser.
-- `--token` — paste an existing API key instead of using the device flow.
+- `--token` — supply an existing API key instead of using the device flow: prompted on a
+  terminal, read from stdin otherwise.
 - `--management` — show the Functions scope bundle in the browser, require an
   owner/admin workspace selection, and save a credential bound to that workspace.
 - `--api-url <url>` — override the Thyme Cloud API URL for this login (http/https).
@@ -174,6 +268,9 @@ thyme upload my-task -w ws_123abc -p proj_456def
 
 # Explicit immutable version (required for non-interactive repeat uploads)
 thyme upload my-task -w ws_123abc -p proj_456def --tag beta
+
+# Fully unattended: no pickers, no confirmation
+thyme upload my-task -w ws_123abc -p proj_456def --tag beta --ci
 ```
 
 **Options:**
@@ -181,6 +278,9 @@ thyme upload my-task -w ws_123abc -p proj_456def --tag beta
 - `-w, --workspace <id>` — workspace ID to upload to (skips the interactive prompt).
 - `-p, --project <id>` — project ID to upload to (skips the interactive prompt).
 - `-t, --tag <tag>` — immutable function version tag (skips the version prompt).
+- `--ci` / `-y, --yes` — answer `Proceed with upload?` yes. `--ci` additionally turns a
+  missing workspace, project, task, or tag into an error naming the flag rather than a
+  prompt.
 
 The CLI fetches your available workspaces and projects from the API and, if the flags
 are omitted, walks you through a workspace → project picker. A new function name defaults
@@ -282,6 +382,9 @@ THYME_API_URL=https://functions.thymelabs.io/http
 
 # Cloud auth token (config wins; this is a fallback)
 THYME_AUTH_TOKEN=your-token
+
+# Force non-interactive mode without passing --ci (0/false/off/no/empty disable it)
+THYME_CI=1
 ```
 
 Notes:
@@ -293,6 +396,9 @@ Notes:
 - The API URL resolves in this order: `THYME_API_URL` env → `~/.thyme/config.json`
   `apiUrl` → built-in default (`https://functions.thymelabs.io/http`). Use `thyme api-url`
   to see the resolved value.
+- `THYME_CI` and `THYME_NON_INTERACTIVE` (and the standard `CI` /
+  `CONTINUOUS_INTEGRATION`) disable prompts — see
+  [Non-interactive use](#non-interactive-use-ci-and-agents).
 
 For `thyme run`, the CLI also loads `functions/<task>/.env` after task selection.
 Task-local values override root `.env` values for that task and are exposed as

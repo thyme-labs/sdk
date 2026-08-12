@@ -10,6 +10,14 @@ import {
 	setAuthToken,
 } from '../utils/config'
 import { loadEnv } from '../utils/env'
+import {
+	spinner as createSpinner,
+	failNonInteractive,
+	isInteractive,
+	promptConfirm,
+	promptPassword,
+	promptText,
+} from '../utils/interactive'
 import { clack, error, info, intro, outro, pc } from '../utils/ui'
 
 const projectSchema = z.object({
@@ -151,7 +159,7 @@ function isValidApiUrl(value: string): boolean {
 }
 
 async function verifyAndDisplayUser(apiUrl: string, token: string) {
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Verifying token...')
 
 	const verifyResponse = await fetch(`${apiUrl}/api/auth/verify`, {
@@ -201,7 +209,7 @@ async function verifyAndDisplayUser(apiUrl: string, token: string) {
 }
 
 async function browserLogin(apiUrl: string, mode: 'standard' | 'management') {
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Starting authentication...')
 
 	const startResponse = await fetch(`${apiUrl}/api/cli/auth/start`, {
@@ -233,7 +241,7 @@ async function browserlessLogin(
 	apiUrl: string,
 	mode: 'standard' | 'management',
 ) {
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Starting authentication...')
 
 	const startResponse = await fetch(`${apiUrl}/api/cli/auth/start`, {
@@ -265,7 +273,7 @@ async function pollForToken(
 	sessionId: string,
 	sessionSecret: string,
 ): Promise<string> {
-	const spinner = clack.spinner()
+	const spinner = createSpinner()
 	spinner.start('Waiting for approval...')
 
 	const timeout = 5 * 60 * 1000 // 5 minutes
@@ -304,27 +312,55 @@ async function pollForToken(
 	process.exit(1)
 }
 
+/**
+ * Read a piped API key. Never falls back to an interactive read: if stdin is a
+ * terminal there is nothing queued and awaiting it would hang the run forever,
+ * which is exactly the failure mode this whole path exists to avoid.
+ */
+async function readTokenFromStdin(): Promise<string> {
+	if (process.stdin.isTTY) return ''
+	const chunks: Buffer[] = []
+	for await (const chunk of process.stdin) {
+		chunks.push(Buffer.from(chunk))
+	}
+	return Buffer.concat(chunks).toString('utf-8').trim()
+}
+
 async function tokenLogin(_apiUrl: string) {
+	if (!isInteractive()) {
+		const piped = await readTokenFromStdin()
+		if (!piped) {
+			failNonInteractive(
+				'An API token',
+				'Pipe it on stdin (`echo "$THYME_API_KEY" | thyme login --token`), or skip login entirely by exporting THYME_AUTH_TOKEN.',
+			)
+		}
+		if (piped.length < 10) {
+			error('Token seems too short')
+			process.exit(1)
+		}
+		return piped
+	}
+
 	info('To authenticate with Thyme Cloud:')
 	clack.log.message(`  1. Visit portal`)
 	clack.log.message('  2. Generate a new API token')
 	clack.log.message('  3. Copy the token and paste it below')
 	clack.log.message('')
 
-	const token = await clack.password({
-		message: 'Paste your API token:',
-		validate: (value) => {
-			if (!value) return 'Token is required'
-			if (value.length < 10) return 'Token seems too short'
+	return promptPassword(
+		{
+			message: 'Paste your API token:',
+			validate: (value) => {
+				if (!value) return 'Token is required'
+				if (value.length < 10) return 'Token seems too short'
+			},
 		},
-	})
-
-	if (clack.isCancel(token)) {
-		clack.cancel('Operation cancelled')
-		process.exit(0)
-	}
-
-	return token as string
+		{
+			what: 'An API token',
+			hint: 'Pipe it on stdin: `echo "$THYME_API_KEY" | thyme login --token`',
+		},
+	)
 }
 
 export async function loginCommand(options: LoginOptions = {}) {
@@ -336,13 +372,22 @@ export async function loginCommand(options: LoginOptions = {}) {
 		process.exit(2)
 	}
 
+	// The browser device flow needs someone to approve it in a browser we can't
+	// open; fail immediately instead of polling for five minutes.
+	if (!options.token && !options.browserless && !isInteractive()) {
+		failNonInteractive(
+			'An interactive terminal',
+			'`thyme login` opens a browser. Use `thyme login --browserless` to approve from another device, pipe a key with `thyme login --token`, or export THYME_AUTH_TOKEN and skip login.',
+		)
+	}
+
 	// Check if already authenticated
 	const existingToken = getAuthToken()
 	if (existingToken && !options.token && !options.management) {
-		const shouldContinue = await clack.confirm({
+		const shouldContinue = await promptConfirm({
 			message: 'You are already logged in. Do you want to re-authenticate?',
 		})
-		if (clack.isCancel(shouldContinue) || !shouldContinue) {
+		if (!shouldContinue) {
 			clack.cancel('Operation cancelled')
 			process.exit(0)
 		}
@@ -372,22 +417,21 @@ export async function loginCommand(options: LoginOptions = {}) {
 		setApiUrl(apiUrl)
 		clack.log.step(`API URL saved to ~/.thyme/config.json: ${pc.cyan(apiUrl)}`)
 	} else if (options.rewriteApiUrl) {
-		const nextApiUrl = await clack.text({
-			message: 'Enter Thyme API URL:',
-			placeholder: configuredApiUrl,
-			defaultValue: configuredApiUrl,
-			validate: (value) => {
-				if (!value) return 'API URL is required'
-				if (!isValidApiUrl(value)) return 'Expected a valid http(s) URL'
+		apiUrl = await promptText(
+			{
+				message: 'Enter Thyme API URL:',
+				placeholder: configuredApiUrl,
+				defaultValue: configuredApiUrl,
+				validate: (value) => {
+					if (!value) return 'API URL is required'
+					if (!isValidApiUrl(value)) return 'Expected a valid http(s) URL'
+				},
 			},
-		})
-
-		if (clack.isCancel(nextApiUrl)) {
-			clack.cancel('Operation cancelled')
-			process.exit(0)
-		}
-
-		apiUrl = nextApiUrl as string
+			{
+				what: 'An API URL',
+				hint: 'Pass it directly instead of `--rewrite-api-url`: `thyme login --api-url <url>`',
+			},
+		)
 		setApiUrl(apiUrl)
 		clack.log.step(
 			`API URL updated in ~/.thyme/config.json: ${pc.cyan(apiUrl)}`,
