@@ -1,5 +1,16 @@
 # @thyme-labs/cli
 
+## 0.8.0
+
+### Minor Changes
+
+- 402b7b5: Expose the execution address as `ctx.account`. Cloud runs use the executable profile address, while local runs require `SIMULATE_ACCOUNT` and expose its checksummed value. The field is available in the main run and every lifecycle callback.
+
+### Patch Changes
+
+- Updated dependencies [402b7b5]
+  - @thyme-labs/sdk@0.7.0
+
 ## 0.7.0
 
 ### Minor Changes
