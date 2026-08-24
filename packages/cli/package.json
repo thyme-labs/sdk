@@ -1,6 +1,6 @@
 {
 	"name": "@thyme-labs/cli",
-	"version": "0.8.0",
+	"version": "0.9.0",
 	"description": "CLI for developing and deploying Thyme tasks",
 	"repository": {
 		"type": "git",
