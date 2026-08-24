@@ -69,13 +69,6 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		process.exit(1)
 	}
 
-	// Check if Deno is installed
-	const hasDeno = await checkDeno()
-	if (!hasDeno) {
-		error('Deno is not installed. Please install Deno: https://deno.land/')
-		process.exit(1)
-	}
-
 	// Discover tasks if no task name provided
 	let finalTaskName = taskName
 
@@ -147,6 +140,14 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		process.exit(1)
 	}
 	const { args, storage } = taskInputs
+
+	// Validate all local inputs before checking the runtime dependency, so a
+	// malformed file is reported consistently even on a machine without Deno.
+	const hasDeno = await checkDeno()
+	if (!hasDeno) {
+		error('Deno is not installed. Please install Deno: https://deno.land/')
+		process.exit(1)
+	}
 
 	const spinner = createSpinner()
 	spinner.start('Executing task in Deno sandbox...')

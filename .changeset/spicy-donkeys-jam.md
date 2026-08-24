@@ -25,7 +25,8 @@ Make every command usable without a TTY, for CI pipelines and agents.
 - New projects now inherit dependency versions from the installed CLI package instead
   of being pinned to obsolete `0.4.0` releases, and their generated task starts inert.
 - `thyme run` now fails on malformed `args.json` or `storage.json` instead of silently
-  substituting `{}`; `--persist` can no longer overwrite malformed local storage.
+  substituting `{}`; `--persist` can no longer overwrite malformed local storage, and
+  input errors are reported before missing runtime dependencies such as Deno.
 - `thyme upload <task>` validates the local task before authentication or remote
   workspace discovery, so typos fail immediately without a network round trip.
 - Upload archives now use deterministic ZIP metadata, so unchanged bundles keep the
