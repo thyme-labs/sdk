@@ -93,42 +93,6 @@ export async function uploadCommand(
 		process.exit(1)
 	}
 
-	// Prefer the management credential bound to an explicitly selected
-	// workspace (or the sole saved management workspace). Standard login tokens
-	// remain a backwards-compatible fallback for the interactive upload flow.
-	const standardAuthToken = getAuthToken()
-	let managementCredential: ReturnType<typeof selectManagementCredential>
-	try {
-		managementCredential = selectManagementCredential(
-			getStoredCredentials(),
-			workspaceId,
-		)
-	} catch (credentialError) {
-		if (!standardAuthToken) {
-			error(
-				credentialError instanceof Error
-					? credentialError.message
-					: String(credentialError),
-			)
-			process.exit(1)
-		}
-	}
-	const authToken = managementCredential?.token ?? standardAuthToken
-	if (!authToken) {
-		error('Not authenticated. Run `thyme login --management` or `thyme login`.')
-		process.exit(1)
-	}
-	workspaceId ??= managementCredential?.workspaceId
-
-	// Get API URL (Thyme Cloud API URL)
-	const apiUrl = getApiUrl()
-	if (!apiUrl) {
-		error(
-			'THYME_API_URL is not set. Please set it to your Thyme Cloud API URL in .env',
-		)
-		process.exit(1)
-	}
-
 	// Discover tasks if no task name provided
 	let finalTaskName = taskName
 
@@ -159,6 +123,50 @@ export async function uploadCommand(
 			},
 		)
 	}
+
+	let taskPath: string
+	try {
+		taskPath = getTaskPath(projectRoot, finalTaskName)
+	} catch (err) {
+		error(err instanceof Error ? err.message : String(err))
+		process.exit(1)
+	}
+
+	if (!existsSync(taskPath)) {
+		error(`Task "${finalTaskName}" not found`)
+		process.exit(1)
+	}
+
+	// Prefer the management credential bound to an explicitly selected
+	// workspace (or the sole saved management workspace). Standard login tokens
+	// remain a backwards-compatible fallback for the interactive upload flow.
+	// Resolve this only after local task validation so a typo never requires a
+	// login or network round trip before it can be reported.
+	const standardAuthToken = getAuthToken()
+	let managementCredential: ReturnType<typeof selectManagementCredential>
+	try {
+		managementCredential = selectManagementCredential(
+			getStoredCredentials(),
+			workspaceId,
+		)
+	} catch (credentialError) {
+		if (!standardAuthToken) {
+			error(
+				credentialError instanceof Error
+					? credentialError.message
+					: String(credentialError),
+			)
+			process.exit(1)
+		}
+	}
+	const authToken = managementCredential?.token ?? standardAuthToken
+	if (!authToken) {
+		error('Not authenticated. Run `thyme login --management` or `thyme login`.')
+		process.exit(1)
+	}
+	workspaceId ??= managementCredential?.workspaceId
+
+	const apiUrl = getApiUrl()
 
 	// Fetch user's workspaces and projects
 	const wsSpinner = createSpinner()
@@ -283,20 +291,6 @@ export async function uploadCommand(
 	}
 
 	const selectedProj = projects.find((p) => p.id === selectedProjId)!
-
-	let taskPath: string
-	try {
-		taskPath = getTaskPath(projectRoot, finalTaskName)
-	} catch (err) {
-		error(err instanceof Error ? err.message : String(err))
-		process.exit(1)
-	}
-
-	// Check if task exists
-	if (!existsSync(taskPath)) {
-		error(`Task "${finalTaskName}" not found`)
-		process.exit(1)
-	}
 
 	const versionSpinner = createSpinner()
 	versionSpinner.start('Checking function versions...')

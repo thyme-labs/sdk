@@ -64,7 +64,6 @@ export async function newCommand(taskName?: string) {
 
 		// Create index.ts
 		const indexTs = `import { defineTask, z } from '@thyme-labs/sdk'
-import { encodeFunctionData } from 'viem'
 
 export default defineTask({
 	schema: z.object({
@@ -100,19 +99,15 @@ export default defineTask({
 		// Example: Read task-local secrets from functions/${finalTaskName}/.env
 		// const apiKey = ctx.secrets.MY_API_KEY
 
-		// Example: Return calls to execute
-		logger.info('Task completed successfully')
+		// A new task is inert until you deliberately replace this return value.
+		// This makes it safe to run or upload the scaffold while you build it.
+		logger.info('Task template is not configured yet')
 		return {
-			canExec: true,
-			calls: [
-				{
-					to: targetAddress,
-					data: '0x' as const,
-				},
-			],
+			canExec: false,
+			message: 'Task template is not configured yet',
 		}
 
-		// Example with encodeFunctionData:
+		// To emit calls, import encodeFunctionData from viem and return:
 		// const abi = [...] as const
 		// return {
 		//   canExec: true,
@@ -126,12 +121,6 @@ export default defineTask({
 		//       }),
 		//     },
 		//   ],
-		// }
-
-		// Or return false if conditions not met
-		// return {
-		//   canExec: false,
-		//   message: 'Conditions not met'
 		// }
 	},
 })

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import type { Address } from 'viem'
 import {
 	BaseError,
@@ -26,6 +26,7 @@ import {
 	resolveLoadedEnv,
 } from '../utils/env'
 import { spinner as createSpinner, promptSelect } from '../utils/interactive'
+import { loadTaskInputs } from '../utils/task-inputs'
 import {
 	discoverTasks,
 	getTaskArgsPath,
@@ -138,30 +139,14 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		env: runtimeEnv,
 	}
 
-	// Load args
-	let args: unknown = {}
-	if (existsSync(argsPath)) {
-		try {
-			const argsData = await readFile(argsPath, 'utf-8')
-			args = JSON.parse(argsData)
-		} catch (err) {
-			warn(
-				`Failed to load args.json: ${err instanceof Error ? err.message : String(err)}`,
-			)
-		}
+	let taskInputs: Awaited<ReturnType<typeof loadTaskInputs>>
+	try {
+		taskInputs = await loadTaskInputs(argsPath, storagePath)
+	} catch (err) {
+		error(err instanceof Error ? err.message : String(err))
+		process.exit(1)
 	}
-
-	let storage: unknown = {}
-	if (existsSync(storagePath)) {
-		try {
-			const storageData = await readFile(storagePath, 'utf-8')
-			storage = JSON.parse(storageData)
-		} catch (err) {
-			warn(
-				`Failed to load storage.json: ${err instanceof Error ? err.message : String(err)}`,
-			)
-		}
-	}
+	const { args, storage } = taskInputs
 
 	const spinner = createSpinner()
 	spinner.start('Executing task in Deno sandbox...')

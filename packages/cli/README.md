@@ -88,13 +88,17 @@ Initialize a new Thyme project.
 thyme init my-project
 cd my-project
 npm install
+cp .env.example .env
+# Edit .env and set SIMULATE_ACCOUNT (plus RPC_URL when the task reads chain state)
 ```
 
 `name` must match `^[a-z0-9-]+$`, whether it is passed as an argument or entered at the
 prompt (you'll be prompted if omitted, unless prompts are unavailable). Creates an empty
 `functions/` directory, plus `package.json` (`type: module`, a `dev` script that runs
 `thyme run`, deps `@thyme-labs/sdk` + `viem` + `zod`, devDeps `@thyme-labs/cli` +
-`typescript`), `tsconfig.json`, `.env.example`, `.gitignore`, and `README.md`.
+`typescript`), `tsconfig.json`, `.env.example`, `.gitignore`, and `README.md`. Dependency
+versions come from the installed CLI package, keeping a newly generated project on a
+compatible SDK and CLI release.
 
 ### `thyme new [name]`
 
@@ -112,6 +116,9 @@ path traversal (`..`, `/`, `\`), and cannot be reserved (`node_modules`, `dist`,
 - `functions/my-task/args.json` — test arguments (`ctx.args` for `thyme run`)
 - `functions/my-task/storage.json` — local storage seed (`ctx.storage`)
 - `functions/my-task/.env.example` — task-local secret template
+
+The generated task is deliberately inert (`canExec: false`) until you replace its
+return value. It can be run and uploaded safely while you build out its logic.
 
 ### `thyme run [task]`
 
@@ -165,6 +172,9 @@ thyme run my-task --callback onFail:timeout
 Output includes the task's logs, the result (`canExec`/`calls`, or the skip
 `message`), execution stats (duration, memory, RPC request count), and the produced
 storage.
+
+Malformed `args.json` or `storage.json` is a fatal input error. The CLI does not fall
+back to `{}`, which ensures `--persist` cannot replace an unreadable local storage seed.
 
 ### `thyme list`
 
@@ -294,8 +304,9 @@ different code is a conflict.
 
 **Upload pipeline:** esbuild bundles the task to a single ESM file → the Zod schema is
 extracted to JSON Schema → `source.ts` + `bundle.js` are zipped with a sha256 checksum
-→ the archive is sent as a multipart upload. The CLI shows a summary and asks for
-confirmation before uploading.
+→ the archive is sent as a multipart upload. ZIP metadata is fixed, so unchanged source
+and dependencies produce the same checksum and repeating an upload is genuinely
+idempotent. The CLI shows a summary and asks for confirmation before uploading.
 
 **Schema extraction:** the `schema` field of your `defineTask()` call is converted to
 JSON Schema and stored alongside the code, so the Console can render an arguments form.

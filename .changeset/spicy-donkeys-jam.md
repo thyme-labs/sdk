@@ -22,3 +22,11 @@ Make every command usable without a TTY, for CI pipelines and agents.
 - Spinners degrade to plain single-line log output off a TTY, so CI logs stay readable.
 - `thyme init <name>` now validates a name passed as an argument with the same rule the
   prompt used, rejecting uppercase names and path separators.
+- New projects now inherit dependency versions from the installed CLI package instead
+  of being pinned to obsolete `0.4.0` releases, and their generated task starts inert.
+- `thyme run` now fails on malformed `args.json` or `storage.json` instead of silently
+  substituting `{}`; `--persist` can no longer overwrite malformed local storage.
+- `thyme upload <task>` validates the local task before authentication or remote
+  workspace discovery, so typos fail immediately without a network round trip.
+- Upload archives now use deterministic ZIP metadata, so unchanged bundles keep the
+  same checksum and same-tag retries reach the backend's idempotent path.

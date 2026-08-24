@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spinner as createSpinner, promptText } from '../utils/interactive'
+import { getScaffoldDependencyVersions } from '../utils/package-info'
 import { error, intro, outro, pc } from '../utils/ui'
 
 export async function initCommand(projectName?: string) {
@@ -44,6 +45,8 @@ export async function initCommand(projectName?: string) {
 	spinner.start('Creating project structure...')
 
 	try {
+		const versions = getScaffoldDependencyVersions()
+
 		// Create directories
 		await mkdir(projectPath, { recursive: true })
 		await mkdir(join(projectPath, 'functions'), { recursive: true })
@@ -58,13 +61,13 @@ export async function initCommand(projectName?: string) {
 				dev: 'thyme run',
 			},
 			dependencies: {
-				'@thyme-labs/sdk': '0.4.0',
-				viem: '2.46.3',
-				zod: '3.24.1',
+				'@thyme-labs/sdk': versions.sdk,
+				viem: versions.viem,
+				zod: versions.zod,
 			},
 			devDependencies: {
-				'@thyme-labs/cli': '0.4.0',
-				typescript: '5.7.2',
+				'@thyme-labs/cli': versions.cli,
+				typescript: versions.typescript,
 			},
 		}
 
@@ -135,6 +138,10 @@ A Thyme project for Web3 automation tasks.
 # Install dependencies
 npm install
 
+# Configure the local execution account and RPC
+cp .env.example .env
+# Edit .env before running a task
+
 # Create a new task
 thyme new my-task
 
@@ -170,7 +177,7 @@ root \`.env\` values for that task.
 		spinner.stop('Project created successfully!')
 
 		outro(
-			`${pc.green('✓')} Project initialized!\n\nNext steps:\n  ${pc.cyan('cd')} ${finalProjectName}\n  ${pc.cyan('npm install')}\n  ${pc.cyan('thyme new')} my-task\n  ${pc.cyan('thyme run')} my-task`,
+			`${pc.green('✓')} Project initialized!\n\nNext steps:\n  ${pc.cyan('cd')} ${finalProjectName}\n  ${pc.cyan('npm install')}\n  ${pc.cyan('cp .env.example .env')} ${pc.dim('# then set SIMULATE_ACCOUNT and RPC_URL')}\n  ${pc.cyan('thyme new')} my-task\n  ${pc.cyan('thyme run')} my-task`,
 		)
 	} catch (err) {
 		spinner.stop('Failed to create project')

@@ -37,6 +37,7 @@
 		"commander": "^12.1.0",
 		"dotenv": "^16.4.7",
 		"esbuild": "^0.24.2",
+		"fflate": "^0.8.2",
 		"picocolors": "^1.1.1",
 		"viem": "2.46.3",
 		"zod": "^3.24.1"

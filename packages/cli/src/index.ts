@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import { registerApiCommand } from './commands/api'
 import { apiUrlCommand } from './commands/api-url'
@@ -13,27 +10,9 @@ import { newCommand } from './commands/new'
 import { runCommand } from './commands/run'
 import { uploadCommand } from './commands/upload'
 import { configureInteractivity } from './utils/interactive'
+import { getCliVersion } from './utils/package-info'
 
-// Read version from package.json dynamically
-const __dirname = dirname(fileURLToPath(import.meta.url))
-let version = '0.0.0'
-try {
-	const packageJson = JSON.parse(
-		readFileSync(join(__dirname, '../package.json'), 'utf-8'),
-	)
-	version = packageJson.version || version
-} catch {
-	// Fallback if package.json can't be read (e.g., in bundled builds)
-	// Try one more level up for bundled scenarios
-	try {
-		const packageJson = JSON.parse(
-			readFileSync(join(__dirname, '../../package.json'), 'utf-8'),
-		)
-		version = packageJson.version || version
-	} catch {
-		// Use default version
-	}
-}
+const version = getCliVersion()
 
 const program = new Command()
 
