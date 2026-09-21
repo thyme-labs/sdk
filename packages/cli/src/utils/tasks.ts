@@ -126,6 +126,30 @@ export function getTaskArgsPath(projectRoot: string, taskName: string): string {
 }
 
 /**
+ * Get the path to a task's optional permissions manifest
+ * Includes path traversal protection
+ *
+ * @throws Error if task name is invalid or path escapes functions directory
+ */
+export function getTaskPermissionsPath(
+	projectRoot: string,
+	taskName: string,
+): string {
+	// Validate task name first
+	validateTaskName(taskName)
+
+	const functionsDir = resolve(projectRoot, 'functions')
+	const permissionsPath = resolve(functionsDir, taskName, 'permissions.json')
+
+	// Ensure the resolved path is within the functions directory
+	if (!permissionsPath.startsWith(functionsDir)) {
+		throw new Error('Invalid task path: path traversal detected')
+	}
+
+	return permissionsPath
+}
+
+/**
  * Get the path to a task's local storage file
  * Includes path traversal protection
  *

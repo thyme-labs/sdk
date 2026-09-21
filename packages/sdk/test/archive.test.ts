@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { strToU8, zipSync } from 'fflate'
+import { strToU8, Zip, ZipPassThrough, zipSync } from 'fflate'
 import { compressTask, decompressTask } from '../src/archive'
 
 describe('compressTask', () => {
@@ -39,6 +39,39 @@ describe('compressTask', () => {
 		expect(result.source).toBe('')
 		expect(result.bundle).toBe('')
 	})
+
+	test('omitting permissions produces the same bytes as before the option existed', () => {
+		const a = compressTask('src', 'bnd')
+		const b = compressTask('src', 'bnd', undefined)
+		expect(b.checksum).toBe(a.checksum)
+		expect(decompressTask(a.zipBuffer).permissions).toBeUndefined()
+	})
+
+	test('includes permissions.json when given, and it round-trips', () => {
+		const manifest =
+			'{"calls":[{"target":{"arg":"token"},"function":"deposit()"}]}'
+		const { zipBuffer } = compressTask('src', 'bnd', manifest)
+		const result = decompressTask(zipBuffer)
+		expect(result.permissions).toBe(manifest)
+		expect(result.source).toBe('src')
+		expect(result.bundle).toBe('bnd')
+	})
+
+	test('an empty permissions string is kept, not treated as absent', () => {
+		// '' is a declared-but-empty manifest; only `undefined` means undeclared.
+		const { zipBuffer } = compressTask('src', 'bnd', '')
+		expect(decompressTask(zipBuffer).permissions).toBe('')
+	})
+
+	test('the checksum covers the manifest', () => {
+		const withOne = compressTask('src', 'bnd', '{"calls":[]}')
+		const withOther = compressTask(
+			'src',
+			'bnd',
+			'{"calls":[{"target":{"arg":"t"},"function":"deposit()"}]}',
+		)
+		expect(withOne.checksum).not.toBe(withOther.checksum)
+	})
 })
 
 describe('decompressTask', () => {
@@ -51,6 +84,31 @@ describe('decompressTask', () => {
 		const result = decompressTask(arrayBuffer)
 		expect(result.source).toBe('src')
 		expect(result.bundle).toBe('bnd')
+	})
+
+	test('refuses an archive with two entries of the same name', () => {
+		// `zipSync` cannot express duplicates (object keys are unique), so build
+		// the archive with the streaming writer. Two entries named the same would
+		// let different readers pick different contents.
+		const chunks: Uint8Array[] = []
+		const zip = new Zip((err, data) => {
+			if (err) throw err
+			if (data) chunks.push(data)
+		})
+		for (const content of ['first', 'second']) {
+			const entry = new ZipPassThrough('source.ts')
+			zip.add(entry)
+			entry.push(strToU8(content), true)
+		}
+		zip.end()
+		const total = chunks.reduce((n, c) => n + c.length, 0)
+		const bytes = new Uint8Array(total)
+		let offset = 0
+		for (const c of chunks) {
+			bytes.set(c, offset)
+			offset += c.length
+		}
+		expect(() => decompressTask(bytes)).toThrow('Duplicate source.ts')
 	})
 
 	test('throws when source.ts is missing', () => {

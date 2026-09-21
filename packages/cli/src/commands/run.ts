@@ -26,12 +26,20 @@ import {
 	resolveLoadedEnv,
 } from '../utils/env'
 import { spinner as createSpinner, promptSelect } from '../utils/interactive'
+import {
+	callPairKey,
+	PERMISSIONS_FILE_NAME,
+	type PermissionsManifest,
+	parsePermissionsManifest,
+	resolvePermissions,
+} from '../utils/permissions'
 import { loadTaskInputs } from '../utils/task-inputs'
 import {
 	discoverTasks,
 	getTaskArgsPath,
 	getTaskEnvPath,
 	getTaskPath,
+	getTaskPermissionsPath,
 	getTaskStoragePath,
 	isThymeProject,
 	validateTaskName,
@@ -104,8 +112,10 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	let argsPath: string
 	let storagePath: string
 	let taskEnvPath: string
+	let permissionsPath: string
 	try {
 		taskPath = getTaskPath(projectRoot, finalTaskName)
+		permissionsPath = getTaskPermissionsPath(projectRoot, finalTaskName)
 		argsPath = getTaskArgsPath(projectRoot, finalTaskName)
 		storagePath = getTaskStoragePath(projectRoot, finalTaskName)
 		taskEnvPath = getTaskEnvPath(projectRoot, finalTaskName)
@@ -148,6 +158,10 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		error('Deno is not installed. Please install Deno: https://deno.land/')
 		process.exit(1)
 	}
+
+	// Validate the optional manifest up front: `thyme upload` refuses an invalid
+	// one, so a local run should not pretend it is fine.
+	const permissions = await loadRunPermissions(permissionsPath, finalTaskName)
 
 	const spinner = createSpinner()
 	spinner.start('Executing task in Deno sandbox...')
@@ -196,6 +210,16 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		for (const call of result.result.calls) {
 			log(`  ${pc.cyan('→')} to: ${call.to}`)
 			log(`     data: ${call.data}`)
+		}
+
+		if (permissions) {
+			log('')
+			await checkCallsAgainstPermissions(
+				result.result.calls,
+				permissions,
+				args,
+				config.rpcUrl,
+			)
 		}
 
 		// Simulate if requested
@@ -287,6 +311,92 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		outro('')
 	} else {
 		outro('')
+	}
+}
+
+async function loadRunPermissions(
+	permissionsPath: string,
+	taskName: string,
+): Promise<PermissionsManifest | undefined> {
+	if (!existsSync(permissionsPath)) return undefined
+
+	let text: string
+	try {
+		text = await readFile(permissionsPath, 'utf-8')
+	} catch (err) {
+		error(
+			`Failed to read functions/${taskName}/${PERMISSIONS_FILE_NAME}: ${err instanceof Error ? err.message : String(err)}`,
+		)
+		process.exit(1)
+	}
+
+	const parsed = parsePermissionsManifest(text)
+	if (!parsed.ok) {
+		error(
+			`functions/${taskName}/${PERMISSIONS_FILE_NAME} is invalid and \`thyme upload\` will refuse it:\n${parsed.errors
+				.map((message) => `  - ${message}`)
+				.join('\n')}`,
+		)
+		process.exit(1)
+	}
+	return parsed.manifest
+}
+
+/**
+ * Warn about returned calls the task's permissions.json does not declare.
+ * In the cloud such a call fails the execution before anything is submitted.
+ * Arg targets resolve from args.json; fixed targets use the RPC's chain id.
+ */
+async function checkCallsAgainstPermissions(
+	calls: Array<{ to: Address; data: `0x${string}` }>,
+	manifest: PermissionsManifest,
+	args: unknown,
+	rpcUrl: string | undefined,
+) {
+	let chainId: number | undefined
+	const needsChain = manifest.calls.some((call) => call.target.kind === 'fixed')
+	if (needsChain && rpcUrl) {
+		try {
+			chainId = await createPublicClient({
+				transport: http(rpcUrl),
+			}).getChainId()
+		} catch (err) {
+			warn(
+				`Could not read the chain id from RPC_URL: ${err instanceof Error ? err.message : String(err)}`,
+			)
+		}
+	}
+
+	const resolved = resolvePermissions(manifest, chainId, args)
+	if (!resolved.ok) {
+		warn(
+			`${PERMISSIONS_FILE_NAME} could not be fully resolved, so no call counts as declared:`,
+		)
+		for (const reason of resolved.reasons) {
+			warn(`  - ${reason}`)
+		}
+	}
+	const allowed = resolved.ok ? resolved.allowed : new Set<string>()
+
+	const undeclared = calls.filter((call) => {
+		const key = callPairKey(call)
+		return key === null || !allowed.has(key)
+	})
+
+	if (undeclared.length === 0) {
+		info(
+			`${pc.green('✓')} Every returned call is declared in ${PERMISSIONS_FILE_NAME}${chainId === undefined ? '' : ` (chain ${chainId})`}`,
+		)
+		return
+	}
+
+	warn(
+		`${undeclared.length} returned call(s) are not declared in ${PERMISSIONS_FILE_NAME}. In the cloud this execution would fail before anything is submitted:`,
+	)
+	for (const call of undeclared) {
+		const selector =
+			callPairKey(call) === null ? 'no selector' : call.data.slice(0, 10)
+		warn(`  - to ${call.to} (${selector})`)
 	}
 }
 

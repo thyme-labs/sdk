@@ -120,6 +120,9 @@ path traversal (`..`, `/`, `\`), and cannot be reserved (`node_modules`, `dist`,
 The generated task is deliberately inert (`canExec: false`) until you replace its
 return value. It can be run and uploaded safely while you build out its logic.
 
+`thyme new` does not create a `permissions.json`. The file is opt-in; see
+[Declaring permissions](#declaring-permissions-permissionsjson).
+
 ### `thyme run [task]`
 
 Run a task locally in a Deno sandbox.
@@ -175,6 +178,11 @@ storage.
 
 Malformed `args.json` or `storage.json` is a fatal input error. The CLI does not fall
 back to `{}`, which ensures `--persist` cannot replace an unreadable local storage seed.
+
+When the task has a `permissions.json`, `thyme run` validates it before running (an
+invalid file is an error) and warns about every returned call it does not declare.
+Argument targets resolve from `args.json`; fixed targets use the chain id read from
+`RPC_URL`. See [Declaring permissions](#declaring-permissions-permissionsjson).
 
 ### `thyme list`
 
@@ -303,10 +311,11 @@ name/tag/checksum is idempotent and reuses the existing function ID; reusing a t
 different code is a conflict.
 
 **Upload pipeline:** esbuild bundles the task to a single ESM file → the Zod schema is
-extracted to JSON Schema → `source.ts` + `bundle.js` are zipped with a sha256 checksum
-→ the archive is sent as a multipart upload. ZIP metadata is fixed, so unchanged source
-and dependencies produce the same checksum and repeating an upload is genuinely
-idempotent. The CLI shows a summary and asks for confirmation before uploading.
+extracted to JSON Schema → `source.ts` + `bundle.js` (plus `permissions.json` when the
+task has one) are zipped with a sha256 checksum → the archive is sent as a multipart
+upload. ZIP metadata is fixed, so unchanged source and dependencies produce the same
+checksum and repeating an upload is genuinely idempotent. The CLI shows a summary and
+asks for confirmation before uploading.
 
 **Schema extraction:** the `schema` field of your `defineTask()` call is converted to
 JSON Schema and stored alongside the code, so the Console can render an arguments form.
@@ -326,6 +335,53 @@ export default defineTask({
 > **Upload schedules nothing.** After upload, your code shows up in **Console →
 > Functions**. Triggers, profile, gas mode, args, and secret bindings are all
 > configured in the Console when you assemble an executable from the uploaded function.
+
+#### Declaring permissions (`permissions.json`)
+
+A task can declare the contract calls it makes in an optional
+`functions/<task>/permissions.json`. The file is **opt-in**: `thyme new` does not create
+it, and a task without one uploads exactly as before.
+
+```json
+{
+  "calls": [
+    { "target": { "11155111": "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14" }, "function": "deposit()" },
+    { "target": { "arg": "token" }, "function": "approve(address,uint256)" },
+    { "target": { "arg": "router" }, "function": "0x38ed1739" }
+  ]
+}
+```
+
+Each call names a contract and a function:
+
+- `target` takes one of two forms:
+  - **A fixed address per chain**: an object mapping decimal chain ids to addresses,
+    with at least one entry. A mixed-case address must carry a valid checksum.
+  - **A named argument**: `{ "arg": "<name>" }`, where `<name>` is a top-level argument
+    of the task (matching `^[A-Za-z_][A-Za-z0-9_]*$`). It is filled from the
+    executable's args when the executable is bound, so it must hold a contract address.
+- `function` is a signature such as `approve(address,uint256)` or a 4-byte selector such
+  as `0x095ea7b3`. An entry without a selector is an error: such a call cannot be
+  granted. Note that a call returning `data: '0x'` has no selector and cannot be
+  declared.
+
+Rules: the file is JSON of at most 16 KiB, unknown keys are errors, and it may declare
+at most 50 distinct calls (duplicates by target and selector are merged). `"calls": []`
+is valid and declares that the task makes no calls.
+
+`thyme upload` validates the file and puts it inside the release ZIP, so the checksum
+covers it. An invalid file stops the upload, including under `--ci` and `--yes`;
+delete it to upload without declared permissions.
+
+The Thyme backend re-validates the file and **enforces** it:
+
+- **At bind time.** When an executable is created, switched to this release, moved to
+  another profile, or has its args changed, the backend checks that the profile's
+  allowlist covers every declared call. If it does not, the binding is refused and the
+  Console offers to extend the profile. A release without the file skips this check.
+- **At run time.** Every call a run returns must match a declared `(target,
+  selector)` pair. A call that does not match fails the execution before anything is
+  submitted or sponsored.
 
 ### Management commands
 

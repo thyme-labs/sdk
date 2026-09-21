@@ -3,9 +3,15 @@ import { strFromU8, unzipSync } from 'fflate'
 export interface DecompressResult {
 	source: string
 	bundle: string
+	/**
+	 * Raw text of `permissions.json` when the archive carries one. Absent means
+	 * the release declares no permissions. The text is returned unvalidated;
+	 * callers must validate it before trusting it.
+	 */
+	permissions?: string
 }
 
-// Task archives contain source.ts + bundle.js. The limits are enforced before
+// Task archives contain source.ts + bundle.js, and optionally permissions.json. The limits are enforced before
 // inflation so this reader is safe to use at upload and execution boundaries.
 const MAX_ZIP_SIZE = 10 * 1024 * 1024
 const MAX_DECOMPRESSED_SIZE = 50 * 1024 * 1024
@@ -25,6 +31,7 @@ export function decompressTask(
 
 	let declaredTotal = 0
 	let fileCount = 0
+	const seen = new Set<string>()
 	const decompressed = unzipSync(uint8Array, {
 		filter(file) {
 			if (++fileCount > MAX_FILE_COUNT) {
@@ -33,8 +40,17 @@ export function decompressTask(
 				)
 			}
 
-			const wanted = file.name === 'source.ts' || file.name === 'bundle.js'
+			const wanted =
+				file.name === 'source.ts' ||
+				file.name === 'bundle.js' ||
+				file.name === 'permissions.json'
 			if (!wanted) return false
+			// Two entries with the same name would let different readers pick
+			// different contents. Refuse rather than guess.
+			if (seen.has(file.name)) {
+				throw new Error(`Duplicate ${file.name} in ZIP archive`)
+			}
+			seen.add(file.name)
 
 			declaredTotal += file.originalSize
 			if (declaredTotal > MAX_DECOMPRESSED_SIZE) {
@@ -51,8 +67,12 @@ export function decompressTask(
 	if (!sourceBytes) throw new Error('source.ts not found in ZIP archive')
 	if (!bundleBytes) throw new Error('bundle.js not found in ZIP archive')
 
-	return {
+	const permissionsBytes = decompressed['permissions.json']
+
+	const result: DecompressResult = {
 		source: strFromU8(sourceBytes),
 		bundle: strFromU8(bundleBytes),
 	}
+	if (permissionsBytes) result.permissions = strFromU8(permissionsBytes)
+	return result
 }

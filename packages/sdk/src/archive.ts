@@ -20,12 +20,22 @@ function calculateSha256(data: Uint8Array): string {
  * Compress source and bundle into a ZIP archive
  * Uses fflate for fast, modern compression
  * Uses SHA-256 for cryptographically secure checksum
+ *
+ * When `permissions` is given, the raw text of the task's `permissions.json`
+ * is added as a third entry. The checksum covers the whole ZIP, so it covers
+ * the manifest too. Without it the archive is exactly what it was before.
  */
-export function compressTask(source: string, bundle: string): CompressResult {
-	// Create ZIP archive with both files
-	const files = {
+export function compressTask(
+	source: string,
+	bundle: string,
+	permissions?: string,
+): CompressResult {
+	const files: Record<string, Uint8Array> = {
 		'source.ts': strToU8(source),
 		'bundle.js': strToU8(bundle),
+	}
+	if (typeof permissions === 'string') {
+		files['permissions.json'] = strToU8(permissions)
 	}
 
 	const compressed = zipSync(files, {
