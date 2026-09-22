@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { z } from 'zod'
 import { bundleTask } from '../utils/bundler'
 import { compressTask } from '../utils/compress'
@@ -17,10 +18,16 @@ import {
 	promptSelect,
 } from '../utils/interactive'
 import { selectManagementCredential } from '../utils/management-api'
+import {
+	PERMISSIONS_FILE_NAME,
+	type PermissionsManifest,
+	parsePermissionsManifest,
+} from '../utils/permissions'
 import { extractSchemaFromTask } from '../utils/schema-extractor'
 import {
 	discoverTasks,
 	getTaskPath,
+	getTaskPermissionsPath,
 	isThymeProject,
 	validateTaskName,
 } from '../utils/tasks'
@@ -136,6 +143,12 @@ export async function uploadCommand(
 		error(`Task "${finalTaskName}" not found`)
 		process.exit(1)
 	}
+
+	// Validate the optional permissions manifest before anything touches the
+	// network. An invalid file is a hard error, even under --ci / --yes: the
+	// backend would reject it, and silently dropping it would upload a release
+	// that declares nothing.
+	const permissions = await loadTaskPermissions(projectRoot, finalTaskName)
 
 	// Prefer the management credential bound to an explicitly selected
 	// workspace (or the sole saved management workspace). Standard login tokens
@@ -376,7 +389,11 @@ export async function uploadCommand(
 		spinner.message('Compressing files...')
 
 		// Compress source and bundle into ZIP
-		const { zipBuffer, checksum } = compressTask(source, bundle)
+		const { zipBuffer, checksum } = compressTask(
+			source,
+			bundle,
+			permissions?.text,
+		)
 
 		spinner.stop('Bundle ready')
 
@@ -402,6 +419,9 @@ export async function uploadCommand(
 			`  ${pc.dim('Size:')}      ${(zipBuffer.length / 1024).toFixed(2)} KB`,
 		)
 		clack.log.message(`  ${pc.dim('Checksum:')}  ${checksum.slice(0, 16)}...`)
+		clack.log.message(
+			`  ${pc.dim('Permissions:')} ${formatPermissionsSummary(permissions?.manifest)}`,
+		)
 		clack.log.message('')
 
 		const confirmed = await promptConfirm({
@@ -490,4 +510,60 @@ export async function uploadCommand(
 		error(err instanceof Error ? err.message : String(err))
 		process.exit(1)
 	}
+}
+
+interface LoadedPermissions {
+	/** Raw file text, uploaded byte-for-byte inside the ZIP. */
+	text: string
+	manifest: PermissionsManifest
+}
+
+/**
+ * Read and validate `functions/<task>/permissions.json`. Returns undefined when
+ * the task has no manifest (it is opt-in). Exits on any read or validation
+ * error, regardless of interactive mode.
+ */
+async function loadTaskPermissions(
+	projectRoot: string,
+	taskName: string,
+): Promise<LoadedPermissions | undefined> {
+	let permissionsPath: string
+	try {
+		permissionsPath = getTaskPermissionsPath(projectRoot, taskName)
+	} catch (err) {
+		error(err instanceof Error ? err.message : String(err))
+		process.exit(1)
+	}
+
+	if (!existsSync(permissionsPath)) return undefined
+
+	let text: string
+	try {
+		text = await readFile(permissionsPath, 'utf-8')
+	} catch (err) {
+		error(
+			`Failed to read functions/${taskName}/${PERMISSIONS_FILE_NAME}: ${err instanceof Error ? err.message : String(err)}`,
+		)
+		process.exit(1)
+	}
+
+	const result = parsePermissionsManifest(text)
+	if (!result.ok) {
+		error(
+			`functions/${taskName}/${PERMISSIONS_FILE_NAME} is invalid. Fix it or delete the file to upload without declared permissions:\n${result.errors
+				.map((message) => `  - ${message}`)
+				.join('\n')}`,
+		)
+		process.exit(1)
+	}
+
+	return { text, manifest: result.manifest }
+}
+
+function formatPermissionsSummary(
+	manifest: PermissionsManifest | undefined,
+): string {
+	if (!manifest) return pc.dim('none declared')
+	if (manifest.calls.length === 0) return pc.cyan('declares no calls')
+	return pc.cyan(`${manifest.calls.length} call(s) declared`)
 }
