@@ -1,5 +1,27 @@
 # @thyme-labs/cli
 
+## 0.10.0
+
+### Minor Changes
+
+- c3b6b1b: Add optional function permission manifests (`functions/<task>/permissions.json`).
+
+  - `compressTask(source, bundle, permissions?)` adds `permissions.json` to the release
+    ZIP when given. Without it the archive is unchanged.
+  - `decompressTask` returns `permissions?: string` with the raw manifest text when the
+    archive carries one, and rejects an archive with duplicate `source.ts`, `bundle.js`,
+    or `permissions.json` entries.
+  - `thyme upload` validates `permissions.json` when the task has one and includes it in
+    the ZIP. An invalid manifest is a hard error, including under `--ci` and `--yes`.
+  - `thyme run` validates the manifest and warns about every returned call it does not
+    declare, resolving argument targets from `args.json` and the chain id from `RPC_URL`.
+  - `thyme new` does not scaffold the file; it is opt-in and documented in the CLI README.
+
+### Patch Changes
+
+- Updated dependencies [c3b6b1b]
+  - @thyme-labs/sdk@0.8.0
+
 ## 0.9.0
 
 ### Minor Changes
