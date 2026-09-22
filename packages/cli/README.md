@@ -377,6 +377,41 @@ Print the resolved Thyme Cloud API URL and where it came from (`env`, `config`, 
 thyme api-url
 ```
 
+### `thyme verify roles-profile`
+
+Independently verify a Thyme-created ("sponsored") Roles profile Safe. Needs no
+Thyme account and never talks to Thyme; its only network access is the JSON-RPC
+endpoint you choose (`--rpc-url`, then `RPC_URL`, then a public Sepolia endpoint).
+Every address, hash, template field and salt prefix it uses is typed in its source.
+
+```bash
+# Before you sign: check the request the console produced against what this
+# machine rebuilds from the profile id, your wallet and the allowlist you typed
+thyme verify roles-profile --profile PROFILE_ID --owner 0xYourWallet \
+  --request request.json --allowlist allowlist.json
+
+# After activation: recompute the Safe and Roles proxy and read the chain
+thyme verify roles-profile --profile PROFILE_ID --owner 0xYourWallet \
+  --digest 0xTheDigestYouSigned
+```
+
+Pre-signature mode runs checks 0-13 (owner, pinned `proxyCreationCode` read from
+the chain, salt, canonical initializer, Safe address, Roles proxy and role key,
+executor Safe from the session key, typed-data structure, outer shape, nonce,
+CALL-only inner calls, allowed selectors, allowlist equality, digest) and prints
+every decoded inner call. `--mode scope-update` (with `--previous-allowlist`) and
+`--mode revocation` verify the two later request shapes. Any failure means: do not
+sign.
+
+Post-hoc mode prints the ten activation checks (owners, threshold, version,
+modules, proxy runtime and singleton, fallback handler and guard, Roles proxy
+runtime, Roles owner/avatar/target, the `SafeSetup` birth log proven to sit in the
+factory's creation transaction, and the `ExecutionSuccess` log for `--digest`),
+plus the executor Safe derived from the Roles proxy's own `AssignRoles` logs.
+Exit codes: 0 all passed, 1 a check failed, 2 usage or input error. `--json`
+prints a machine-readable result. Run `thyme verify roles-profile --help` for the
+trust-model background.
+
 ## Environment Variables
 
 Create a `.env` file in your project root for CLI/project defaults:

@@ -9,6 +9,7 @@ import { registerManagementCommands } from './commands/management'
 import { newCommand } from './commands/new'
 import { runCommand } from './commands/run'
 import { uploadCommand } from './commands/upload'
+import { registerVerifyCommand } from './commands/verify'
 import { configureInteractivity } from './utils/interactive'
 import { getCliVersion } from './utils/package-info'
 
@@ -119,6 +120,7 @@ program
 	.description('Show current Thyme API URL')
 	.action(apiUrlCommand)
 
+registerVerifyCommand(program)
 registerApiCommand(program)
 registerManagementCommands(program)
 
