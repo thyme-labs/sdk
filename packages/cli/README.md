@@ -437,8 +437,13 @@ thyme api-url
 
 Independently verify a Thyme-created ("sponsored") Roles profile Safe. Needs no
 Thyme account and never talks to Thyme; its only network access is the JSON-RPC
-endpoint you choose (`--rpc-url`, then `RPC_URL`, then a public Sepolia endpoint).
-Every address, hash, template field and salt prefix it uses is typed in its source.
+endpoint you choose (`--rpc-url`, then `RPC_URL`, then viem's public endpoint for
+`--chain`). Every address, hash, template field and salt prefix it uses is typed
+in its source. `--chain` accepts the chains the pins were verified on: Ethereum
+Sepolia (11155111, the default), Polygon Amoy (80002), Unichain Sepolia (1301),
+Polygon (137), OP Mainnet (10) and BNB Smart Chain (56); any other id is refused.
+Public endpoints often rate-limit the `eth_getLogs` ranges the post-hoc log checks
+need, so point `--rpc-url` at a node you control for those.
 
 ```bash
 # Before you sign: check the request the console produced against what this

@@ -20,9 +20,10 @@ import {
 	buildCanonicalSafeInitializer,
 	buildRolesProxyInitializer,
 	customerSafeSaltNonce,
+	describeRolesChains,
 	executorSafeSaltNonce,
 	isCanonicalProxyCreationCode,
-	ROLES_CHAIN_ID,
+	isRolesChainId,
 	ROLES_PINS,
 	recomputeExecutorSafeAddress,
 	recomputeRolesProxyAddress,
@@ -398,11 +399,11 @@ function parseTypedData(
 			domainKeys.join(','),
 		)
 	}
-	if (chainId !== ROLES_CHAIN_ID) {
+	if (!isRolesChainId(chainId)) {
 		fail(
 			7,
-			'sponsored Roles onboarding is pinned to Sepolia only',
-			String(ROLES_CHAIN_ID),
+			'sponsored Roles onboarding is not pinned on this chain',
+			describeRolesChains(),
 			String(chainId),
 		)
 	}
