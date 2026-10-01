@@ -36,8 +36,36 @@ import {
  * and any drift is a security bug.
  */
 
-/** The only chain these pins were verified on (Ethereum Sepolia). */
-export const ROLES_CHAIN_ID = 11155111 as const
+/**
+ * The chains these pins were verified on. Every pinned contract is a
+ * deterministic deployment, so it sits at the same address with the same
+ * runtime bytecode on each of them. The post-hoc checks still re-read every
+ * runtime on whichever chain the command is pointed at, so a chain that is
+ * listed here but does not hold the audited code fails check 0.
+ */
+export const ROLES_CHAINS = [
+	{ id: 11155111, name: 'Ethereum Sepolia' },
+	{ id: 80002, name: 'Polygon Amoy' },
+	{ id: 1301, name: 'Unichain Sepolia' },
+	{ id: 137, name: 'Polygon' },
+	{ id: 10, name: 'OP Mainnet' },
+	{ id: 56, name: 'BNB Smart Chain' },
+] as const
+
+export type RolesChainId = (typeof ROLES_CHAINS)[number]['id']
+
+export const ROLES_CHAIN_IDS: readonly RolesChainId[] = ROLES_CHAINS.map(
+	(chain) => chain.id,
+)
+
+export function isRolesChainId(chainId: number): chainId is RolesChainId {
+	return (ROLES_CHAIN_IDS as readonly number[]).includes(chainId)
+}
+
+/** `11155111 (Ethereum Sepolia), 80002 (Polygon Amoy), …` for messages. */
+export function describeRolesChains(): string {
+	return ROLES_CHAINS.map((chain) => `${chain.id} (${chain.name})`).join(', ')
+}
 
 export const SAFE_VERSION = '1.4.1' as const
 
@@ -79,8 +107,8 @@ export const ROLES_PINS = {
 } as const satisfies Record<string, Hex>
 
 /**
- * `keccak256` of the runtime bytecode deployed at each pinned address on
- * Sepolia. The post-hoc checks re-read every one with `eth_getCode` first: if
+ * `keccak256` of the runtime bytecode deployed at each pinned address on every
+ * chain in `ROLES_CHAINS`. The post-hoc checks re-read every one with `eth_getCode` first: if
  * a pinned address does not hold the audited code, nothing derived from it
  * means anything.
  */

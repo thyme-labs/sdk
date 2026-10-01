@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import type { Command } from 'commander'
 import {
 	type Address,
+	type Chain,
 	createPublicClient,
 	getAddress,
 	type Hex,
@@ -9,7 +10,14 @@ import {
 	isAddress,
 	type PublicClient,
 } from 'viem'
-import { sepolia } from 'viem/chains'
+import {
+	bsc,
+	optimism,
+	polygon,
+	polygonAmoy,
+	sepolia,
+	unichainSepolia,
+} from 'viem/chains'
 import { getEnv, loadEnv } from '../utils/env'
 import {
 	type CheckRow,
@@ -22,8 +30,10 @@ import {
 } from '../utils/roles-chain'
 import {
 	customerSafeSaltNonce,
+	describeRolesChains,
 	executorSafeSaltNonce,
-	ROLES_CHAIN_ID,
+	isRolesChainId,
+	type RolesChainId,
 	recomputeRolesProxyAddress,
 	recomputeSafeAddress,
 	roleKeyFor,
@@ -141,8 +151,8 @@ Post-hoc mode (default)
 
   Logs are scanned newest-first in --chunk-blocks windows from the chain
   head back to --from-block, or back --max-blocks when --from-block is not
-  given. --rpc-url defaults to RPC_URL from .env, then viem's public Sepolia
-  endpoint.
+  given. --rpc-url defaults to RPC_URL from .env, then viem's public
+  endpoint for --chain.
 
 Exit codes: 0 all checks passed, 1 a check failed, 2 usage or input error.
 `
@@ -163,12 +173,12 @@ export function registerVerifyCommand(program: Command): void {
 		)
 		.option(
 			'--chain <id>',
-			'Chain id; only 11155111 (Sepolia) is pinned',
+			`Chain id; pinned on ${describeRolesChains()}`,
 			'11155111',
 		)
 		.option(
 			'--rpc-url <url>',
-			'JSON-RPC endpoint (default: RPC_URL, then a public Sepolia endpoint)',
+			"JSON-RPC endpoint (default: RPC_URL, then viem's public endpoint for --chain)",
 		)
 		.option(
 			'--digest <hex>',
@@ -225,7 +235,7 @@ export async function verifyRolesProfileCommand(
 			throw new UsageError('--profile must not be empty')
 		const chainId = parseChain(options.chain)
 		const client = createPublicClient({
-			chain: sepolia,
+			chain: VIEM_CHAINS[chainId],
 			transport: http(options.rpcUrl ?? getEnv('RPC_URL')),
 		})
 		const liveChainId = await client.getChainId()
@@ -275,13 +285,26 @@ function parseOwner(value: string): Address {
 	return getAddress(value)
 }
 
-function parseChain(value: string): number {
+/**
+ * viem's chain definitions, used only for the default public RPC endpoint when
+ * neither --rpc-url nor RPC_URL is given. Nothing about the pins comes from here.
+ */
+const VIEM_CHAINS: Record<RolesChainId, Chain> = {
+	11155111: sepolia,
+	80002: polygonAmoy,
+	1301: unichainSepolia,
+	137: polygon,
+	10: optimism,
+	56: bsc,
+}
+
+function parseChain(value: string): RolesChainId {
 	if (!DECIMAL.test(value))
 		throw new UsageError(`--chain is not a chain id: ${value}`)
 	const chainId = Number(value)
-	if (chainId !== ROLES_CHAIN_ID) {
+	if (!isRolesChainId(chainId)) {
 		throw new UsageError(
-			`only chain ${ROLES_CHAIN_ID} (Sepolia) is pinned; refusing chain ${chainId}`,
+			`chain ${chainId} is not pinned; this command supports ${describeRolesChains()}`,
 		)
 	}
 	return chainId
