@@ -1,5 +1,15 @@
 # @thyme-labs/cli
 
+## 0.11.0
+
+### Minor Changes
+
+- e130a67: `thyme verify roles-profile` now accepts every chain the sponsored Roles pins were verified on: Ethereum Sepolia, Polygon Amoy, Unichain Sepolia, Polygon, OP Mainnet and BNB Smart Chain. Pass `--chain <id>`; without `--rpc-url` or `RPC_URL` the command uses viem's public endpoint for that chain. Unlisted chain ids are still refused.
+
+### Patch Changes
+
+- 60ff6e9: `thyme run` no longer crashes with a missing `readFile` reference when a task directory contains a permissions manifest.
+
 ## 0.10.0
 
 ### Minor Changes
