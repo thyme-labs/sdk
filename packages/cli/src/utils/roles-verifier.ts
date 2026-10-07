@@ -86,6 +86,8 @@ export type PreparedSponsoredSetup = {
 	customerSafeInitializer?: string
 	/** The template the service claims; checked when present, never trusted. */
 	customerSafeTemplate?: string
+	/** Set when the Safe reuses another profile's address; must equal `saltProfileId`. */
+	customerSafeSaltProfileId?: string
 	/** Required for setup and scope updates; ignored for revocations. */
 	scopeRules?: readonly RolesScopeRule[]
 }
@@ -969,6 +971,13 @@ export function verifySponsoredSetup(input: {
 	connectedAddress: string | undefined
 	chainId: number
 	profileId: string
+	/**
+	 * The profile whose Safe this profile recreates at the same address on a
+	 * new chain: the id the Safe's salt derives from. Absent means
+	 * `profileId`. The address still commits to the owner and the template,
+	 * so the salt only selects among Safes the owner alone holds.
+	 */
+	saltProfileId?: string
 	/** The allowlist the customer typed. */
 	policy: SponsoredRolesPolicy
 	/** The rules live on chain BEFORE this batch; required for scope updates. */
@@ -1046,12 +1055,24 @@ export function verifySponsoredSetup(input: {
 			creationCodes['1.5.0'] = code150
 		}
 
-		// 2. The salt derives from the profile id.
+		// 2. The salt derives from the profile id, or from the profile whose Safe
+		//    this one recreates on a new chain.
 		check = 2
 		if (typeof profileId !== 'string' || profileId.length === 0) {
 			fail(2, 'profile id is empty')
 		}
-		const saltNonce = customerSafeSaltNonce(profileId)
+		if (input.saltProfileId !== undefined && input.saltProfileId.length === 0) {
+			fail(2, 'the reused profile id is empty')
+		}
+		if (prepared.customerSafeSaltProfileId !== input.saltProfileId) {
+			fail(
+				2,
+				"the Safe's salt does not derive from the profile you named with --salt-profile",
+				input.saltProfileId ?? profileId,
+				prepared.customerSafeSaltProfileId ?? profileId,
+			)
+		}
+		const saltNonce = customerSafeSaltNonce(input.saltProfileId ?? profileId)
 		if (prepared.customerSaltNonce === undefined) {
 			if (creation) fail(2, 'the request carries no customerSaltNonce')
 		} else {
@@ -1066,7 +1087,9 @@ export function verifySponsoredSetup(input: {
 			if (BigInt(prepared.customerSaltNonce) !== saltNonce) {
 				fail(
 					2,
-					'customerSaltNonce does not derive from this profile id',
+					input.saltProfileId === undefined
+						? 'customerSaltNonce does not derive from this profile id'
+						: 'customerSaltNonce does not derive from the --salt-profile id',
 					saltNonce.toString(),
 					prepared.customerSaltNonce,
 				)

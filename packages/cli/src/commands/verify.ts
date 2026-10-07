@@ -92,6 +92,7 @@ type VerifyRolesProfileOptions = {
 	mode: string
 	ordering?: string
 	safeVersion: string
+	saltProfile?: string
 	json?: boolean
 }
 
@@ -153,6 +154,14 @@ Safe versions (--safe-version)
   or 1.5.0 to require one. A 1.4.1 Safe upgraded in place to 1.5.0 from
   Safe{Wallet} is still a 1.4.1-born Safe: rows 3, 5 and 6 accept the
   SafeL2 1.5.0 singleton and handler, and row 9 still proves the 1.4.1 birth.
+
+Same Safe on another chain (--salt-profile)
+
+  A profile can recreate, at the same address, a Safe another profile has on
+  a different chain. Its Safe's salt then derives from THAT profile's id:
+  pass it as --salt-profile. The Roles proxy, role key and executor Safe
+  still derive from --profile. The copy is born with its original owner and
+  nothing else, so check that you still control that owner key.
 
 Post-hoc mode (default)
 
@@ -239,6 +248,10 @@ export function registerVerifyCommand(program: Command): void {
 			`The template the Safe was born on: auto | ${SAFE_VERSIONS.join(' | ')}`,
 			'auto',
 		)
+		.option(
+			'--salt-profile <id>',
+			"The profile whose Safe this profile recreates on a new chain; the Safe's salt derives from it",
+		)
 		.option('--json', 'Print a machine-readable result instead of text')
 		.addHelpText('after', HELP_TEXT)
 		.action((options: VerifyRolesProfileOptions) =>
@@ -269,9 +282,13 @@ export async function verifyRolesProfileCommand(
 				`the RPC endpoint serves chain ${liveChainId}, not ${chainId}`,
 			)
 		}
+		const saltProfileId = options.saltProfile?.trim()
+		if (saltProfileId !== undefined && saltProfileId.length === 0)
+			throw new UsageError('--salt-profile must not be empty')
 		const context: Context = {
 			owner,
 			profileId,
+			saltProfileId,
 			chainId,
 			safeVersion,
 			options,
@@ -304,6 +321,8 @@ type Client = PublicClient
 type Context = {
 	owner: Address
 	profileId: string
+	/** The id the customer Safe's salt derives from (`--salt-profile`). */
+	saltProfileId?: string
 	chainId: number
 	/** `undefined` means auto. */
 	safeVersion?: SafeVersion
@@ -378,10 +397,10 @@ async function readOptionalProxyCreationCode150(
 /** The customer Safe address each template derives, for the codes given. */
 function candidateSafes(
 	owner: Address,
-	profileId: string,
+	saltProfileId: string,
 	codes: Partial<Record<SafeVersion, Hex>>,
 ): { version: SafeVersion; address: Address }[] {
-	const saltNonce = customerSafeSaltNonce(profileId)
+	const saltNonce = customerSafeSaltNonce(saltProfileId)
 	return SAFE_VERSIONS.flatMap((version) => {
 		const proxyCreationCode = codes[version]
 		return proxyCreationCode === undefined
@@ -566,6 +585,10 @@ function parseRequest(
 			customerSaltNonce: optionalString(raw, 'customerSaltNonce'),
 			customerSafeInitializer: optionalString(raw, 'customerSafeInitializer'),
 			customerSafeTemplate: optionalString(raw, 'customerSafeTemplate'),
+			customerSafeSaltProfileId: optionalString(
+				raw,
+				'customerSafeSaltProfileId',
+			),
 			scopeRules,
 		},
 		ordering: optionalString(raw, 'ordering'),
@@ -648,7 +671,7 @@ async function preSignature(
 	if (needsNonce) {
 		// The nonce is read from whichever derived Safe the request names; the
 		// verifier still requires the request's Safe to be one of them.
-		const named = candidateSafes(owner, profileId, {
+		const named = candidateSafes(owner, context.saltProfileId ?? profileId, {
 			'1.4.1': proxyCreationCode,
 			'1.5.0': proxyCreationCode150,
 		}).find((candidate) =>
@@ -675,6 +698,7 @@ async function preSignature(
 		connectedAddress: owner,
 		chainId,
 		profileId,
+		saltProfileId: context.saltProfileId,
 		policy,
 		previousRules,
 		proxyCreationCode,
@@ -771,7 +795,7 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 		context.safeVersion === '1.4.1'
 			? undefined
 			: await readOptionalProxyCreationCode150(client, options.json)
-	const candidates = candidateSafes(owner, profileId, {
+	const candidates = candidateSafes(owner, context.saltProfileId ?? profileId, {
 		'1.4.1': proxyCreationCode,
 		'1.5.0': proxyCreationCode150,
 	})
@@ -790,7 +814,7 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 			.endsWith(
 				CUSTOMER_SAFE_TEMPLATES['1.5.0'].singleton.slice(2).toLowerCase(),
 			) === true
-	const customerSalt = customerSafeSaltNonce(profileId)
+	const customerSalt = customerSafeSaltNonce(context.saltProfileId ?? profileId)
 	const rolesSalt = rolesSaltNonce(profileId)
 	const rolesProxy = recomputeRolesProxyAddress({ safe, saltNonce: rolesSalt })
 	const roleKey = roleKeyFor(profileId)
@@ -812,6 +836,9 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 		step('Recomputed on this machine, from hard-coded constants')
 		log(`  owner              ${owner}`)
 		log(`  profile            ${profileId}`)
+		if (context.saltProfileId) {
+			log(`  Safe salt from     ${context.saltProfileId}`)
+		}
 		log(
 			`  Safe template      ${safeVersion}${runs150 && safeVersion !== '1.5.0' ? ' (upgraded in place to 1.5.0)' : ''}`,
 		)
@@ -857,6 +884,7 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 			derived: {
 				owner,
 				profileId,
+				saltProfileId: context.saltProfileId,
 				safeVersion,
 				candidates,
 				safe,

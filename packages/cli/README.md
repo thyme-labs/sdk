@@ -483,6 +483,11 @@ was upgraded in place to 1.5.0 from Safe{Wallet} still verifies as 1.4.1-born:
 the version, singleton and handler rows accept the 1.5.0 deployments, and the
 birth log still proves the 1.4.1 template.
 
+A profile can also recreate, at the same address, a Safe another profile has on a
+different chain. That Safe's salt derives from the other profile's id: pass it as
+`--salt-profile`. The Roles proxy, role key and executor Safe still derive from
+`--profile`.
+
 ## Environment Variables
 
 Create a `.env` file in your project root for CLI/project defaults:
