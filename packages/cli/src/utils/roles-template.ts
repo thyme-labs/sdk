@@ -14,10 +14,14 @@ import {
 /**
  * The hard-coded template and pins behind `thyme verify roles-profile`.
  *
- * A Thyme-created ("sponsored") Roles profile Safe is a Safe 1.4.1 proxy whose
- * address is the CREATE2 of a fixed initializer:
+ * A Thyme-created ("sponsored") Roles profile Safe is a Safe 1.4.1 or 1.5.0
+ * proxy whose address is the CREATE2 of a fixed initializer:
  *
  *   setup([owner], 1, 0x0, 0x, CompatibilityFallbackHandler, 0x0, 0, 0x0)
+ *
+ * The two templates differ only in the factory, the singleton and the
+ * fallback handler, each the audited deployment of its own version. Every
+ * other field, the salt and the executor Safe (always 1.4.1) are shared.
  *
  * `Safe.setup` delegatecalls `to` with `data` as the newborn Safe, so an
  * initializer with a non-empty `to`/`data` can write ANY storage slot —
@@ -67,7 +71,17 @@ export function describeRolesChains(): string {
 	return ROLES_CHAINS.map((chain) => `${chain.id} (${chain.name})`).join(', ')
 }
 
+/** The executor Safe's version, and the template every early profile used. */
 export const SAFE_VERSION = '1.4.1' as const
+
+/** The versions a Thyme-created customer Safe can be born on. */
+export const SAFE_VERSIONS = ['1.4.1', '1.5.0'] as const
+
+export type SafeVersion = (typeof SAFE_VERSIONS)[number]
+
+export function isSafeVersion(value: string): value is SafeVersion {
+	return (SAFE_VERSIONS as readonly string[]).includes(value)
+}
 
 export const ZERO_ADDRESS: Address =
 	'0x0000000000000000000000000000000000000000'
@@ -104,6 +118,28 @@ export const ROLES_PINS = {
 	 */
 	CANONICAL_PROXY_CREATION_CODE_HASH:
 		'0x1856e0ee08399d74e0ea0b03adca210aeade6f748969ac023cdcb4dd62dcaf5f',
+} as const satisfies Record<string, Hex>
+
+/**
+ * safe-fndn/safe-smart-account v1.5.0: what a customer Safe created from the
+ * 1.5.0 template commits to. SafeL2 1.5.0 and its fallback handler are also
+ * what Safe{Wallet}'s in-place upgrade (SafeMigration) installs on a 1.4.1
+ * Safe. MultiSendCallOnly and the executor Safe stay on the 1.4.1 pins above.
+ */
+export const SAFE_1_5_0_PINS = {
+	/** SafeProxyFactory 1.5.0. */
+	PROXY_FACTORY: '0x14F2982D601c9458F93bd70B218933A6f8165e7b',
+	/** SafeL2 1.5.0. */
+	L2_SINGLETON: '0xEdd160fEBBD92E350D4D398fb636302fccd67C7e',
+	/** CompatibilityFallbackHandler 1.5.0. */
+	FALLBACK_HANDLER: '0x3EfCBb83A4A7AfcB4F68D501E2c2203a38be77f4',
+	/**
+	 * `keccak256(SafeProxyFactory 1.5.0 .proxyCreationCode())`: the 438-byte
+	 * SafeProxy 1.5.0 creation code, read from the chain and accepted only
+	 * when it hashes to this.
+	 */
+	PROXY_CREATION_CODE_HASH:
+		'0x941b3e88811b2f33b8e26783c7407d2e978404581a21c9f07abf2cad9cb87e12',
 } as const satisfies Record<string, Hex>
 
 /**
@@ -167,9 +203,86 @@ export const ROLES_STACK: readonly {
 	},
 ]
 
+/**
+ * The 1.5.0 contracts, checked only when the Safe was born on 1.5.0 or has
+ * been upgraded to it. Same runtime on every chain in `ROLES_CHAINS` except
+ * Unichain Sepolia, where SafeL2 and the handler 1.5.0 are not deployed.
+ */
+export const SAFE_1_5_0_STACK: readonly {
+	name: string
+	address: Address
+	runtimeHash: Hex
+}[] = [
+	{
+		name: 'SafeProxyFactory 1.5.0',
+		address: SAFE_1_5_0_PINS.PROXY_FACTORY,
+		runtimeHash:
+			'0x967dae4cda22b0c9ef7f31b010bdc1ceb0af9904b0c3dc060b5302e4c18a4529',
+	},
+	{
+		name: 'SafeL2 1.5.0',
+		address: SAFE_1_5_0_PINS.L2_SINGLETON,
+		runtimeHash:
+			'0x180193227186ccb85316c94db1f0d156ed932b14712cfaac78901899178572dc',
+	},
+	{
+		name: 'CompatibilityFallbackHandler 1.5.0',
+		address: SAFE_1_5_0_PINS.FALLBACK_HANDLER,
+		runtimeHash:
+			'0x3c6a85bcf7b563daa624b884b4e9a1b9fa5371edde7be945d998071a48f28bbc',
+	},
+]
+
 /** `keccak256` of a deployed Safe 1.4.1 proxy's runtime bytecode. */
 export const SAFE_PROXY_RUNTIME_HASH: Hex =
 	'0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c'
+
+/** `keccak256` of a deployed Safe 1.5.0 proxy's runtime bytecode. */
+export const SAFE_1_5_0_PROXY_RUNTIME_HASH: Hex =
+	'0x4e381985ca68b3e5d27b4425fa581c19cf33146d3f887a3cfca96f55528ea46f'
+
+/** A customer Safe template: the version-specific inputs of its CREATE2. */
+export type CustomerSafeTemplate = {
+	version: SafeVersion
+	factory: Address
+	singleton: Address
+	fallbackHandler: Address
+	proxyCreationCodeHash: Hex
+	/** The proxy's own runtime; an in-place upgrade never changes it. */
+	proxyRuntimeHash: Hex
+}
+
+export const CUSTOMER_SAFE_TEMPLATES: Record<
+	SafeVersion,
+	CustomerSafeTemplate
+> = {
+	'1.4.1': {
+		version: '1.4.1',
+		factory: ROLES_PINS.SAFE_PROXY_FACTORY,
+		singleton: ROLES_PINS.SAFE_L2_SINGLETON,
+		fallbackHandler: ROLES_PINS.SAFE_FALLBACK_HANDLER,
+		proxyCreationCodeHash: ROLES_PINS.CANONICAL_PROXY_CREATION_CODE_HASH,
+		proxyRuntimeHash: SAFE_PROXY_RUNTIME_HASH,
+	},
+	'1.5.0': {
+		version: '1.5.0',
+		factory: SAFE_1_5_0_PINS.PROXY_FACTORY,
+		singleton: SAFE_1_5_0_PINS.L2_SINGLETON,
+		fallbackHandler: SAFE_1_5_0_PINS.FALLBACK_HANDLER,
+		proxyCreationCodeHash: SAFE_1_5_0_PINS.PROXY_CREATION_CODE_HASH,
+		proxyRuntimeHash: SAFE_1_5_0_PROXY_RUNTIME_HASH,
+	},
+}
+
+/**
+ * The versions a Safe born on `version` may run now, itself first. A 1.4.1
+ * Safe may have been upgraded in place to SafeL2 1.5.0 (Safe{Wallet}'s
+ * SafeMigration), which swaps the singleton and, in its usual form, the
+ * fallback handler; the proxy runtime and the birth log are untouched.
+ */
+export function runnableVersions(version: SafeVersion): readonly SafeVersion[] {
+	return version === '1.4.1' ? ['1.4.1', '1.5.0'] : ['1.5.0']
+}
 
 /**
  * EIP-1167 minimal-proxy creation code the ModuleProxyFactory emits, split
@@ -187,8 +300,9 @@ export const SAFE_MODULE_SENTINEL: Address =
 	'0x0000000000000000000000000000000000000001'
 
 /**
- * Safe 1.4.1 storage slots: slot 0 holds the singleton; the other two are the
- * hashed slots Safe's FallbackManager and GuardManager use. Derived, not typed.
+ * Safe storage slots: slot 0 holds the singleton; the next two are the hashed
+ * slots Safe's FallbackManager and GuardManager use; the module guard slot is
+ * new in 1.5.0 and reads zero on a 1.4.1 Safe. Derived, not typed.
  */
 export const SAFE_SINGLETON_SLOT: Hex = toHex(0n, { size: 32 })
 export const SAFE_FALLBACK_HANDLER_SLOT: Hex = keccak256(
@@ -197,11 +311,15 @@ export const SAFE_FALLBACK_HANDLER_SLOT: Hex = keccak256(
 export const SAFE_GUARD_SLOT: Hex = keccak256(
 	toHex('guard_manager.guard.address'),
 )
+export const SAFE_MODULE_GUARD_SLOT: Hex = keccak256(
+	toHex('module_manager.module_guard.address'),
+)
 
 /**
  * The customer Safe: sole owner, threshold 1, NO `to`, NO `data`, NO module.
  * Every field is part of the CREATE2 commitment; changing one changes the
- * address.
+ * address. The addresses here are the 1.4.1 template's; the 1.5.0 template
+ * swaps factory, singleton and fallback handler (`CUSTOMER_SAFE_TEMPLATES`).
  */
 export const CANONICAL_SAFE_TEMPLATE = {
 	factory: ROLES_PINS.SAFE_PROXY_FACTORY,
@@ -235,7 +353,7 @@ export const CANONICAL_EXECUTOR_TEMPLATE = {
 	paymentReceiver: ZERO_ADDRESS,
 } as const
 
-/** Safe 1.4.1 `setup`. */
+/** Safe `setup`; the same in 1.4.1 and 1.5.0. */
 export const safeSetupAbi = parseAbi([
 	'function setup(address[] owners, uint256 threshold, address to, bytes data, address fallbackHandler, address paymentToken, uint256 payment, address paymentReceiver)',
 ])
@@ -267,7 +385,10 @@ export function roleKeyFor(profileId: string): Hex {
 }
 
 /** The literal `setup(...)` bytes of the customer Safe for `owner`. */
-export function buildCanonicalSafeInitializer(owner: Address): Hex {
+export function buildCanonicalSafeInitializer(
+	owner: Address,
+	version: SafeVersion = '1.4.1',
+): Hex {
 	return encodeFunctionData({
 		abi: safeSetupAbi,
 		functionName: 'setup',
@@ -276,7 +397,7 @@ export function buildCanonicalSafeInitializer(owner: Address): Hex {
 			CANONICAL_SAFE_TEMPLATE.threshold,
 			CANONICAL_SAFE_TEMPLATE.to,
 			CANONICAL_SAFE_TEMPLATE.data,
-			CANONICAL_SAFE_TEMPLATE.fallbackHandler,
+			CUSTOMER_SAFE_TEMPLATES[version].fallbackHandler,
 			CANONICAL_SAFE_TEMPLATE.paymentToken,
 			CANONICAL_SAFE_TEMPLATE.payment,
 			CANONICAL_SAFE_TEMPLATE.paymentReceiver,
@@ -323,10 +444,14 @@ export function buildRolesProxyInitializer(safe: Address): Hex {
 	})
 }
 
-export function isCanonicalProxyCreationCode(proxyCreationCode: Hex): boolean {
+/** `proxyCreationCode` hashes to the pin of the `version` factory. */
+export function isCanonicalProxyCreationCode(
+	proxyCreationCode: Hex,
+	version: SafeVersion = '1.4.1',
+): boolean {
 	return (
 		keccak256(proxyCreationCode) ===
-		ROLES_PINS.CANONICAL_PROXY_CREATION_CODE_HASH
+		CUSTOMER_SAFE_TEMPLATES[version].proxyCreationCodeHash
 	)
 }
 
@@ -336,42 +461,47 @@ export function isCanonicalProxyCreationCode(proxyCreationCode: Hex): boolean {
  * `bytecode = proxyCreationCode ++ abi.encode(singleton)`.
  */
 function safeProxyCreate2Address({
+	template,
 	initializer,
 	saltNonce,
 	proxyCreationCode,
 }: {
+	template: CustomerSafeTemplate
 	initializer: Hex
 	saltNonce: bigint
 	proxyCreationCode: Hex
 }): Address {
 	return getContractAddress({
 		opcode: 'CREATE2',
-		from: ROLES_PINS.SAFE_PROXY_FACTORY,
+		from: template.factory,
 		salt: keccak256(
 			concatHex([keccak256(initializer), pad(toHex(saltNonce), { size: 32 })]),
 		),
 		bytecode: concatHex([
 			proxyCreationCode,
-			encodeAbiParameters(
-				[{ type: 'uint256' }],
-				[BigInt(ROLES_PINS.SAFE_L2_SINGLETON)],
-			),
+			encodeAbiParameters([{ type: 'uint256' }], [BigInt(template.singleton)]),
 		]),
 	})
 }
 
-/** The customer Safe's address from the canonical template. */
+/**
+ * The customer Safe's address from the canonical template of `version`.
+ * `proxyCreationCode` must be that version's factory's.
+ */
 export function recomputeSafeAddress({
 	owner,
 	saltNonce,
 	proxyCreationCode,
+	version = '1.4.1',
 }: {
 	owner: Address
 	saltNonce: bigint
 	proxyCreationCode: Hex
+	version?: SafeVersion
 }): Address {
 	return safeProxyCreate2Address({
-		initializer: buildCanonicalSafeInitializer(owner),
+		template: CUSTOMER_SAFE_TEMPLATES[version],
+		initializer: buildCanonicalSafeInitializer(owner, version),
 		saltNonce,
 		proxyCreationCode,
 	})
@@ -388,6 +518,7 @@ export function recomputeExecutorSafeAddress({
 	proxyCreationCode: Hex
 }): Address {
 	return safeProxyCreate2Address({
+		template: CUSTOMER_SAFE_TEMPLATES['1.4.1'],
 		initializer: buildCanonicalExecutorInitializer(sessionKey),
 		saltNonce,
 		proxyCreationCode,

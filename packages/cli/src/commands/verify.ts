@@ -29,21 +29,27 @@ import {
 	verifyStackPins,
 } from '../utils/roles-chain'
 import {
+	CUSTOMER_SAFE_TEMPLATES,
 	customerSafeSaltNonce,
 	describeRolesChains,
 	executorSafeSaltNonce,
 	isRolesChainId,
+	isSafeVersion,
 	type RolesChainId,
 	recomputeRolesProxyAddress,
 	recomputeSafeAddress,
 	roleKeyFor,
 	rolesSaltNonce,
+	SAFE_SINGLETON_SLOT,
+	SAFE_VERSIONS,
+	type SafeVersion,
 } from '../utils/roles-template'
 import {
 	type PreparedSponsoredSetup,
 	type RolesScopeRule,
 	type SponsoredRolesPolicy,
 	type SponsoredSetupVerdict,
+	sameAddress,
 	type VerifierMode,
 	verifySponsoredSetup,
 } from '../utils/roles-verifier'
@@ -85,6 +91,7 @@ type VerifyRolesProfileOptions = {
 	previousAllowlist?: string
 	mode: string
 	ordering?: string
+	safeVersion: string
 	json?: boolean
 }
 
@@ -93,11 +100,12 @@ class UsageError extends Error {}
 const HELP_TEXT = `
 What this verifies
 
-  A Thyme-created Roles profile is a Safe 1.4.1 whose address is the CREATE2
-  of a fixed initializer — setup([you], 1, 0x0, 0x, CompatibilityFallbackHandler,
-  0x0, 0, 0x0) — plus a salt derived from the profile id, and a Zodiac Roles
-  v2.1.1 proxy bound to that Safe. From Thyme's own documentation of the
-  trust model (docs/roles-profiles.md):
+  A Thyme-created Roles profile is a Safe 1.4.1 or 1.5.0 whose address is the
+  CREATE2 of a fixed initializer — setup([you], 1, 0x0, 0x,
+  CompatibilityFallbackHandler, 0x0, 0, 0x0) — through that version's
+  SafeProxyFactory and SafeL2 singleton, plus a salt derived from the profile
+  id, and a Zodiac Roles v2.1.1 proxy bound to that Safe. From Thyme's own
+  documentation of the trust model (docs/roles-profiles.md):
 
     "Thyme can only send the batch the customer signed, on the Safe the
     signature names, at the nonce it names. But Thyme builds that batch and
@@ -136,6 +144,16 @@ Pre-signature mode (--request)
   the allowlist live before the change; the request must revoke every rule
   you drop explicitly. For a revocation pass --mode revocation (no allowlist).
 
+Safe versions (--safe-version)
+
+  The template is never taken from the request or from Thyme. By default
+  (auto) the command derives the Safe address from both pinned templates:
+  before signing, the request's Safe must be exactly one of them; after
+  activation, exactly one of them must have code. Pass --safe-version 1.4.1
+  or 1.5.0 to require one. A 1.4.1 Safe upgraded in place to 1.5.0 from
+  Safe{Wallet} is still a 1.4.1-born Safe: rows 3, 5 and 6 accept the
+  SafeL2 1.5.0 singleton and handler, and row 9 still proves the 1.4.1 birth.
+
 Post-hoc mode (default)
 
     thyme verify roles-profile --profile <id> --owner <your wallet> \\
@@ -146,8 +164,9 @@ Post-hoc mode (default)
   emitted later by code the Safe delegatecalled is a "do not fund it"
   failure, not a value). Row 11 derives Thyme's executor Safe from the Roles
   proxy's own AssignRoles logs and its sole owner. Rows 1, 2, 4 and 6 describe
-  the Safe at birth; if you added an owner, raised the threshold or enabled a
-  module afterwards they will differ, and that is yours to judge.
+  the Safe at birth; if you added an owner, raised the threshold, enabled a
+  module or set a guard or module guard afterwards they will differ, and that
+  is yours to judge.
 
   Logs are scanned newest-first in --chunk-blocks windows from the chain
   head back to --from-block, or back --max-blocks when --from-block is not
@@ -215,6 +234,11 @@ export function registerVerifyCommand(program: Command): void {
 			'--ordering <ordering>',
 			'Pre-signature setup: sign_first | deploy_first (default: from the request)',
 		)
+		.option(
+			'--safe-version <version>',
+			`The template the Safe was born on: auto | ${SAFE_VERSIONS.join(' | ')}`,
+			'auto',
+		)
 		.option('--json', 'Print a machine-readable result instead of text')
 		.addHelpText('after', HELP_TEXT)
 		.action((options: VerifyRolesProfileOptions) =>
@@ -234,6 +258,7 @@ export async function verifyRolesProfileCommand(
 		if (profileId.length === 0)
 			throw new UsageError('--profile must not be empty')
 		const chainId = parseChain(options.chain)
+		const safeVersion = parseSafeVersion(options.safeVersion)
 		const client = createPublicClient({
 			chain: VIEM_CHAINS[chainId],
 			transport: http(options.rpcUrl ?? getEnv('RPC_URL')),
@@ -244,10 +269,17 @@ export async function verifyRolesProfileCommand(
 				`the RPC endpoint serves chain ${liveChainId}, not ${chainId}`,
 			)
 		}
+		const context: Context = {
+			owner,
+			profileId,
+			chainId,
+			safeVersion,
+			options,
+		}
 		const result =
 			options.request === undefined
-				? await postHoc(client, { owner, profileId, chainId, options })
-				: await preSignature(client, { owner, profileId, chainId, options })
+				? await postHoc(client, context)
+				: await preSignature(client, context)
 		if (json) {
 			process.stdout.write(`${stringify(result.report)}\n`)
 		}
@@ -273,6 +305,8 @@ type Context = {
 	owner: Address
 	profileId: string
 	chainId: number
+	/** `undefined` means auto. */
+	safeVersion?: SafeVersion
 	options: VerifyRolesProfileOptions
 }
 
@@ -308,6 +342,70 @@ function parseChain(value: string): RolesChainId {
 		)
 	}
 	return chainId
+}
+
+function parseSafeVersion(value: string): SafeVersion | undefined {
+	if (value === 'auto') return undefined
+	if (!isSafeVersion(value)) {
+		throw new UsageError(
+			`--safe-version must be auto, ${SAFE_VERSIONS.join(' or ')}, got ${value}`,
+		)
+	}
+	return value
+}
+
+/**
+ * SafeProxyFactory 1.5.0's creation code, or `undefined` with a warning when
+ * the chain does not hold the pinned factory: only the 1.4.1 template is then
+ * considered, and a 1.5.0 Safe fails to match instead of being trusted.
+ */
+async function readOptionalProxyCreationCode150(
+	client: Client,
+	json: boolean | undefined,
+): Promise<Hex | undefined> {
+	try {
+		return await readPinnedProxyCreationCode(client, '1.5.0')
+	} catch (caught) {
+		if (!json) {
+			warn(
+				`SafeProxyFactory 1.5.0 unavailable; only the 1.4.1 template is considered: ${caught instanceof Error ? caught.message.split('\n')[0] : String(caught)}`,
+			)
+		}
+		return undefined
+	}
+}
+
+/** The customer Safe address each template derives, for the codes given. */
+function candidateSafes(
+	owner: Address,
+	profileId: string,
+	codes: Partial<Record<SafeVersion, Hex>>,
+): { version: SafeVersion; address: Address }[] {
+	const saltNonce = customerSafeSaltNonce(profileId)
+	return SAFE_VERSIONS.flatMap((version) => {
+		const proxyCreationCode = codes[version]
+		return proxyCreationCode === undefined
+			? []
+			: [
+					{
+						version,
+						address: recomputeSafeAddress({
+							owner,
+							saltNonce,
+							proxyCreationCode,
+							version,
+						}),
+					},
+				]
+	})
+}
+
+function describeCandidates(
+	candidates: readonly { version: SafeVersion; address: Address }[],
+): string {
+	return candidates
+		.map((candidate) => `${candidate.version} → ${candidate.address}`)
+		.join(', ')
 }
 
 function parseBigint(
@@ -467,6 +565,7 @@ function parseRequest(
 			typedDataJson,
 			customerSaltNonce: optionalString(raw, 'customerSaltNonce'),
 			customerSafeInitializer: optionalString(raw, 'customerSafeInitializer'),
+			customerSafeTemplate: optionalString(raw, 'customerSafeTemplate'),
 			scopeRules,
 		},
 		ordering: optionalString(raw, 'ordering'),
@@ -519,19 +618,27 @@ async function preSignature(
 		step(`Reading SafeProxyFactory.proxyCreationCode() from the chain`)
 	}
 	const proxyCreationCode = await readPinnedProxyCreationCode(client)
+	const proxyCreationCode150 =
+		context.safeVersion === '1.4.1'
+			? undefined
+			: await readOptionalProxyCreationCode150(client, options.json)
 	if (
 		request.proxyCreationCode !== undefined &&
-		request.proxyCreationCode.toLowerCase() !== proxyCreationCode.toLowerCase()
+		![proxyCreationCode, proxyCreationCode150].some(
+			(code) =>
+				code !== undefined &&
+				request.proxyCreationCode?.toLowerCase() === code.toLowerCase(),
+		)
 	) {
 		return {
 			ok: false,
 			summary:
-				"REFUSE TO SIGN: the request carries a proxyCreationCode that is not the factory's",
+				"REFUSE TO SIGN: the request carries a proxyCreationCode that is not a pinned factory's",
 			report: {
 				ok: false,
 				check: 1,
 				reason:
-					"the request's proxyCreationCode differs from SafeProxyFactory.proxyCreationCode() on the chain",
+					"the request's proxyCreationCode differs from every pinned SafeProxyFactory.proxyCreationCode() on the chain",
 			},
 		}
 	}
@@ -539,20 +646,31 @@ async function preSignature(
 	let liveNonce: bigint | undefined
 	const needsNonce = !(mode.kind === 'setup' && mode.ordering === 'sign_first')
 	if (needsNonce) {
-		const safe = recomputeSafeAddress({
-			owner,
-			saltNonce: customerSafeSaltNonce(profileId),
-			proxyCreationCode,
-		})
-		try {
-			liveNonce = await readSafeNonce(client, safe)
-		} catch (caught) {
-			if (!options.json)
-				warn(caught instanceof Error ? caught.message : String(caught))
+		// The nonce is read from whichever derived Safe the request names; the
+		// verifier still requires the request's Safe to be one of them.
+		const named = candidateSafes(owner, profileId, {
+			'1.4.1': proxyCreationCode,
+			'1.5.0': proxyCreationCode150,
+		}).find((candidate) =>
+			sameAddress(candidate.address, request.prepared.safeAddress),
+		)
+		if (named === undefined) {
+			if (!options.json) {
+				warn(
+					'the request names a Safe neither template derives, so its nonce was not read',
+				)
+			}
+		} else {
+			try {
+				liveNonce = await readSafeNonce(client, named.address)
+			} catch (caught) {
+				if (!options.json)
+					warn(caught instanceof Error ? caught.message : String(caught))
+			}
 		}
 	}
 
-	const verdict = verifySponsoredSetup({
+	const verified = verifySponsoredSetup({
 		mode,
 		connectedAddress: owner,
 		chainId,
@@ -560,9 +678,22 @@ async function preSignature(
 		policy,
 		previousRules,
 		proxyCreationCode,
+		proxyCreationCode150,
 		liveNonce,
 		prepared: request.prepared,
 	})
+	const verdict: SponsoredSetupVerdict =
+		verified.ok &&
+		context.safeVersion !== undefined &&
+		verified.safeVersion !== context.safeVersion
+			? {
+					ok: false,
+					check: 4,
+					reason: `the request's Safe derives from the ${verified.safeVersion} template, not the --safe-version you required`,
+					expected: context.safeVersion,
+					received: verified.safeVersion,
+				}
+			: verified
 	if (!options.json) printVerdict(verdict, mode)
 	return {
 		ok: verdict.ok,
@@ -586,6 +717,7 @@ function printVerdict(
 	step('Recomputed on this machine, from hard-coded constants')
 	log(`  mode               ${describeMode(mode)}`)
 	log(`  owner              ${verdict.ownerAddress}`)
+	log(`  Safe template      ${verdict.safeVersion}`)
 	log(`  Safe               ${verdict.safeAddress}`)
 	log(`  Roles proxy        ${verdict.rolesProxyAddress}`)
 	log(`  role key           ${verdict.roleKey}`)
@@ -635,12 +767,30 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 	if (!options.json)
 		step('Reading SafeProxyFactory.proxyCreationCode() from the chain')
 	const proxyCreationCode = await readPinnedProxyCreationCode(client)
-	const customerSalt = customerSafeSaltNonce(profileId)
-	const safe = recomputeSafeAddress({
-		owner,
-		saltNonce: customerSalt,
-		proxyCreationCode,
+	const proxyCreationCode150 =
+		context.safeVersion === '1.4.1'
+			? undefined
+			: await readOptionalProxyCreationCode150(client, options.json)
+	const candidates = candidateSafes(owner, profileId, {
+		'1.4.1': proxyCreationCode,
+		'1.5.0': proxyCreationCode150,
 	})
+	const { address: safe, version: safeVersion } = await chooseSafe(
+		client,
+		candidates,
+		context.safeVersion,
+	)
+	const singletonWord = await client.getStorageAt({
+		address: safe,
+		slot: SAFE_SINGLETON_SLOT,
+	})
+	const runs150 =
+		singletonWord
+			?.toLowerCase()
+			.endsWith(
+				CUSTOMER_SAFE_TEMPLATES['1.5.0'].singleton.slice(2).toLowerCase(),
+			) === true
+	const customerSalt = customerSafeSaltNonce(profileId)
 	const rolesSalt = rolesSaltNonce(profileId)
 	const rolesProxy = recomputeRolesProxyAddress({ safe, saltNonce: rolesSalt })
 	const roleKey = roleKeyFor(profileId)
@@ -662,6 +812,9 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 		step('Recomputed on this machine, from hard-coded constants')
 		log(`  owner              ${owner}`)
 		log(`  profile            ${profileId}`)
+		log(
+			`  Safe template      ${safeVersion}${runs150 && safeVersion !== '1.5.0' ? ' (upgraded in place to 1.5.0)' : ''}`,
+		)
 		log(`  Safe               ${safe}`)
 		log(`  Roles proxy        ${rolesProxy}`)
 		log(`  role key           ${roleKey}`)
@@ -673,7 +826,9 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 		)
 	}
 
-	const rows: CheckRow[] = [await verifyStackPins(client)]
+	const stackVersions: SafeVersion[] =
+		safeVersion === '1.5.0' || runs150 ? ['1.4.1', '1.5.0'] : ['1.4.1']
+	const rows: CheckRow[] = [await verifyStackPins(client, stackVersions)]
 	const result = await runPostHocChecks(client, {
 		safe,
 		owner,
@@ -681,6 +836,7 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 		roleKey,
 		profileId,
 		proxyCreationCode,
+		safeVersion,
 		digest,
 		window,
 	})
@@ -701,6 +857,8 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 			derived: {
 				owner,
 				profileId,
+				safeVersion,
+				candidates,
 				safe,
 				rolesProxy,
 				roleKey,
@@ -715,6 +873,46 @@ async function postHoc(client: Client, context: Context): Promise<Outcome> {
 			roleMembers: result.roleMembers,
 		},
 	}
+}
+
+/**
+ * The derived Safe to verify: the one `--safe-version` names, or else the
+ * only candidate with code. Both with code is ambiguous (anyone can deploy
+ * either through its factory), so the caller must choose.
+ */
+async function chooseSafe(
+	client: Client,
+	candidates: readonly { version: SafeVersion; address: Address }[],
+	required: SafeVersion | undefined,
+): Promise<{ version: SafeVersion; address: Address }> {
+	if (required !== undefined) {
+		const named = candidates.find((candidate) => candidate.version === required)
+		if (named === undefined) {
+			throw new Error(
+				`--safe-version ${required} needs the pinned SafeProxyFactory ${required}, which this chain does not hold`,
+			)
+		}
+		return named
+	}
+	const codes = await Promise.all(
+		candidates.map((candidate) =>
+			client.getCode({ address: candidate.address }),
+		),
+	)
+	const deployed = candidates.filter((_, index) => {
+		const code = codes[index]
+		return code !== undefined && code !== '0x'
+	})
+	const [only] = deployed
+	if (deployed.length === 1 && only !== undefined) return only
+	if (deployed.length === 0) {
+		throw new Error(
+			`neither template's Safe has code on this chain (${describeCandidates(candidates)}); check --profile, --owner and --chain`,
+		)
+	}
+	throw new UsageError(
+		`both templates' Safes have code (${describeCandidates(deployed)}); pass --safe-version`,
+	)
 }
 
 function printRow(row: CheckRow): void {
