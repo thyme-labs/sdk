@@ -1,5 +1,18 @@
 # @thyme-labs/cli
 
+## 0.12.0
+
+### Minor Changes
+
+- 45d92b0: `thyme verify roles-profile` now verifies Roles profile Safes born on the Safe 1.5.0 template (SafeProxyFactory, SafeL2 and CompatibilityFallbackHandler 1.5.0) as well as 1.4.1. The template is never taken from the request: the command derives the Safe from both pinned templates and requires exactly one to match, or the one `--safe-version 1.4.1|1.5.0` names. A 1.4.1 Safe upgraded in place to 1.5.0 from Safe{Wallet} still passes: the version, singleton and fallback-handler rows accept the 1.5.0 deployments while the birth log still proves the 1.4.1 template. The guard row now also requires an empty 1.5.0 module guard.
+- 0d1cbf0: `thyme verify roles-profile` accepts `--salt-profile <id>` for a profile that recreates, at the same address, a Safe another profile has on a different chain. The customer Safe's salt then derives from that profile's id while the Roles proxy, role key and executor Safe still derive from `--profile`; a request whose `customerSafeSaltProfileId` differs is refused at check 2.
+
+### Patch Changes
+
+- dc296b9: Allow verification of Safe Roles setups with no allowed calls and later scope
+  updates from an explicitly empty allowlist. Empty permissions grant no calls;
+  scope updates still require the previous allowlist and verify every revocation.
+
 ## 0.11.0
 
 ### Minor Changes
