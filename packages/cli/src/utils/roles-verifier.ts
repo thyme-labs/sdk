@@ -845,7 +845,8 @@ function verifyRevocations({
  * `allowFunction` carries `ExecutionOptions.None`. Revocations must allow
  * nothing. Scope updates must also revoke, explicitly, every rule of
  * `previousRules` the new allowlist drops (`verifyRevocations`), so
- * `previousRules` is REQUIRED and non-empty in `scope_update` mode.
+ * `previousRules` is REQUIRED in `scope_update` mode, including an explicit
+ * empty list when the role currently has no permissions.
  */
 function verifyPolicy({
 	mode,
@@ -901,9 +902,6 @@ function verifyPolicy({
 			policy.mode,
 		)
 	}
-	if (policy.rules.length === 0) {
-		fail(12, 'the allowlist you typed is empty')
-	}
 	const typed = normalizeRules(12, policy.rules, 'your allowlist')
 	if (!sameSet(allowedSet, typed)) {
 		fail(
@@ -942,12 +940,6 @@ function verifyPolicy({
 			fail(
 				12,
 				'the current allowlist was not supplied (--previous-allowlist), so the functions you are removing cannot be checked for explicit revocation',
-			)
-		}
-		if (previousRules.length === 0) {
-			fail(
-				12,
-				'the current allowlist is empty; a Roles profile being updated always has one',
 			)
 		}
 		verifyRevocations({
