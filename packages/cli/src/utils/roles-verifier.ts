@@ -19,6 +19,7 @@ import {
 	buildCanonicalExecutorInitializer,
 	buildCanonicalSafeInitializer,
 	buildRolesProxyInitializer,
+	CUSTOMER_SAFE_TEMPLATES,
 	customerSafeSaltNonce,
 	describeRolesChains,
 	executorSafeSaltNonce,
@@ -30,6 +31,8 @@ import {
 	recomputeSafeAddress,
 	roleKeyFor,
 	rolesSaltNonce,
+	SAFE_VERSIONS,
+	type SafeVersion,
 	ZERO_ADDRESS,
 } from './roles-template'
 
@@ -47,7 +50,8 @@ import {
  * `sessionKeyAddress` (Thyme's key; bound by recomputing the executor Safe
  * from it with the audited executor template) and the profile id, which the
  * caller supplies on the command line and every salt and the role key derive
- * from.
+ * from. The customer Safe's template version is never taken from the request:
+ * the Safe address must be the CREATE2 of exactly one hard-coded template.
  */
 
 export type VerifierMode =
@@ -80,6 +84,10 @@ export type PreparedSponsoredSetup = {
 	customerSaltNonce?: string
 	/** Required on creation payloads; optional (checked when present) otherwise. */
 	customerSafeInitializer?: string
+	/** The template the service claims; checked when present, never trusted. */
+	customerSafeTemplate?: string
+	/** Set when the Safe reuses another profile's address; must equal `saltProfileId`. */
+	customerSafeSaltProfileId?: string
 	/** Required for setup and scope updates; ignored for revocations. */
 	scopeRules?: readonly RolesScopeRule[]
 }
@@ -96,6 +104,8 @@ export type SponsoredSetupVerdict =
 			ok: true
 			mode: VerifierMode
 			ownerAddress: Address
+			/** The template whose CREATE2 the Safe address is. */
+			safeVersion: SafeVersion
 			safeAddress: Address
 			rolesProxyAddress: Address
 			executorSafeAddress: Address
@@ -119,7 +129,10 @@ export type SponsoredSetupVerdict =
 			received?: string
 	  }
 
-/** Safe 1.4.1 SafeTx typed data. The domain carries ONLY chainId and verifyingContract. */
+/**
+ * Safe SafeTx typed data, identical in 1.4.1 and 1.5.0. The domain carries
+ * ONLY chainId and verifyingContract.
+ */
 export const SAFE_TX_TYPES = {
 	SafeTx: [
 		{ name: 'to', type: 'address' },
@@ -371,7 +384,7 @@ type ParsedSafeTx = {
 }
 
 /**
- * Check 7: the typed data's structure. Only the two-key Safe 1.4.1 domain,
+ * Check 7: the typed data's structure. Only the two-key Safe domain,
  * only the ten-field SafeTx type (optionally the matching EIP712Domain type),
  * every gas field zero, no gas token, no refund receiver.
  */
@@ -394,7 +407,7 @@ function parseTypedData(
 	if (domainKeys.join(',') !== 'chainId,verifyingContract') {
 		fail(
 			7,
-			'domain must carry exactly chainId and verifyingContract (Safe 1.4.1 has no name or version)',
+			'domain must carry exactly chainId and verifyingContract (Safe 1.4.1 and 1.5.0 have no name or version)',
 			'chainId,verifyingContract',
 			domainKeys.join(','),
 		)
@@ -441,7 +454,7 @@ function parseTypedData(
 		}
 	}
 	if (!typedFieldsEqual(types.SafeTx, SAFE_TX_TYPES.SafeTx)) {
-		fail(7, 'types.SafeTx is not the Safe 1.4.1 ten-field SafeTx type')
+		fail(7, 'types.SafeTx is not the Safe ten-field SafeTx type')
 	}
 	if (
 		'EIP712Domain' in types &&
@@ -832,7 +845,8 @@ function verifyRevocations({
  * `allowFunction` carries `ExecutionOptions.None`. Revocations must allow
  * nothing. Scope updates must also revoke, explicitly, every rule of
  * `previousRules` the new allowlist drops (`verifyRevocations`), so
- * `previousRules` is REQUIRED and non-empty in `scope_update` mode.
+ * `previousRules` is REQUIRED in `scope_update` mode, including an explicit
+ * empty list when the role currently has no permissions.
  */
 function verifyPolicy({
 	mode,
@@ -888,9 +902,6 @@ function verifyPolicy({
 			policy.mode,
 		)
 	}
-	if (policy.rules.length === 0) {
-		fail(12, 'the allowlist you typed is empty')
-	}
 	const typed = normalizeRules(12, policy.rules, 'your allowlist')
 	if (!sameSet(allowedSet, typed)) {
 		fail(
@@ -931,12 +942,6 @@ function verifyPolicy({
 				'the current allowlist was not supplied (--previous-allowlist), so the functions you are removing cannot be checked for explicit revocation',
 			)
 		}
-		if (previousRules.length === 0) {
-			fail(
-				12,
-				'the current allowlist is empty; a Roles profile being updated always has one',
-			)
-		}
 		verifyRevocations({
 			previousRules,
 			typed,
@@ -958,12 +963,27 @@ export function verifySponsoredSetup(input: {
 	connectedAddress: string | undefined
 	chainId: number
 	profileId: string
+	/**
+	 * The profile whose Safe this profile recreates at the same address on a
+	 * new chain: the id the Safe's salt derives from. Absent means
+	 * `profileId`. The address still commits to the owner and the template,
+	 * so the salt only selects among Safes the owner alone holds.
+	 */
+	saltProfileId?: string
 	/** The allowlist the customer typed. */
 	policy: SponsoredRolesPolicy
 	/** The rules live on chain BEFORE this batch; required for scope updates. */
 	previousRules?: readonly RolesScopeRule[]
-	/** `SafeProxyFactory.proxyCreationCode()` read from the chain. */
+	/**
+	 * `SafeProxyFactory.proxyCreationCode()` (1.4.1) read from the chain: the
+	 * executor Safe's, and the customer Safe's on the 1.4.1 template.
+	 */
 	proxyCreationCode: Hex
+	/**
+	 * SafeProxyFactory 1.5.0's creation code, read from the chain. Without it
+	 * only the 1.4.1 template is considered.
+	 */
+	proxyCreationCode150?: Hex
 	/** `safe.nonce()` read from the chain; unused for sign-first setup. */
 	liveNonce?: bigint
 	prepared: PreparedSponsoredSetup
@@ -1008,13 +1028,43 @@ export function verifySponsoredSetup(input: {
 				ROLES_PINS.CANONICAL_PROXY_CREATION_CODE_HASH,
 			)
 		}
+		const creationCodes: Partial<Record<SafeVersion, Hex>> = {
+			'1.4.1': proxyCreationCode,
+		}
+		if (input.proxyCreationCode150 !== undefined) {
+			const code150 = requireHex(
+				1,
+				input.proxyCreationCode150,
+				'proxyCreationCode150',
+			)
+			if (!isCanonicalProxyCreationCode(code150, '1.5.0')) {
+				fail(
+					1,
+					'proxyCreationCode150 does not hash to the pinned SafeProxy 1.5.0 creation code',
+					CUSTOMER_SAFE_TEMPLATES['1.5.0'].proxyCreationCodeHash,
+				)
+			}
+			creationCodes['1.5.0'] = code150
+		}
 
-		// 2. The salt derives from the profile id.
+		// 2. The salt derives from the profile id, or from the profile whose Safe
+		//    this one recreates on a new chain.
 		check = 2
 		if (typeof profileId !== 'string' || profileId.length === 0) {
 			fail(2, 'profile id is empty')
 		}
-		const saltNonce = customerSafeSaltNonce(profileId)
+		if (input.saltProfileId !== undefined && input.saltProfileId.length === 0) {
+			fail(2, 'the reused profile id is empty')
+		}
+		if (prepared.customerSafeSaltProfileId !== input.saltProfileId) {
+			fail(
+				2,
+				"the Safe's salt does not derive from the profile you named with --salt-profile",
+				input.saltProfileId ?? profileId,
+				prepared.customerSafeSaltProfileId ?? profileId,
+			)
+		}
+		const saltNonce = customerSafeSaltNonce(input.saltProfileId ?? profileId)
 		if (prepared.customerSaltNonce === undefined) {
 			if (creation) fail(2, 'the request carries no customerSaltNonce')
 		} else {
@@ -1029,16 +1079,22 @@ export function verifySponsoredSetup(input: {
 			if (BigInt(prepared.customerSaltNonce) !== saltNonce) {
 				fail(
 					2,
-					'customerSaltNonce does not derive from this profile id',
+					input.saltProfileId === undefined
+						? 'customerSaltNonce does not derive from this profile id'
+						: 'customerSaltNonce does not derive from the --salt-profile id',
 					saltNonce.toString(),
 					prepared.customerSaltNonce,
 				)
 			}
 		}
 
-		// 3. The literal initializer is the canonical template for the OWNER.
+		// 3. The literal initializer is a canonical template for the OWNER.
 		check = 3
-		const initializer = buildCanonicalSafeInitializer(owner)
+		const initializers: Record<SafeVersion, Hex> = {
+			'1.4.1': buildCanonicalSafeInitializer(owner, '1.4.1'),
+			'1.5.0': buildCanonicalSafeInitializer(owner, '1.5.0'),
+		}
+		let initializerVersion: SafeVersion | undefined
 		if (prepared.customerSafeInitializer === undefined) {
 			if (creation) fail(3, 'the request carries no customerSafeInitializer')
 		} else {
@@ -1047,28 +1103,78 @@ export function verifySponsoredSetup(input: {
 				prepared.customerSafeInitializer,
 				'customerSafeInitializer',
 			)
-			if (!sameHex(claimed, initializer)) {
+			initializerVersion = SAFE_VERSIONS.find((version) =>
+				sameHex(claimed, initializers[version]),
+			)
+			if (initializerVersion === undefined) {
 				fail(
 					3,
-					'customerSafeInitializer is not the canonical setup([you], 1, 0x0, 0x, handler, 0x0, 0, 0x0)',
-					initializer,
+					'customerSafeInitializer is not the canonical setup([you], 1, 0x0, 0x, handler, 0x0, 0, 0x0) of any pinned template',
+					SAFE_VERSIONS.map(
+						(version) => `${version}: ${initializers[version]}`,
+					).join(' | '),
 					claimed,
 				)
 			}
 		}
 
-		// 4. The Safe address is the CREATE2 of that initializer.
+		// 4. The Safe address is the CREATE2 of exactly one template's initializer.
 		check = 4
-		const safe = recomputeSafeAddress({ owner, saltNonce, proxyCreationCode })
 		const claimedSafe = requireAddress(4, prepared.safeAddress, 'safeAddress')
-		if (!sameAddress(safe, claimedSafe)) {
+		const candidates = SAFE_VERSIONS.flatMap((version) => {
+			const code = creationCodes[version]
+			return code === undefined
+				? []
+				: [
+						{
+							version,
+							address: recomputeSafeAddress({
+								owner,
+								saltNonce,
+								proxyCreationCode: code,
+								version,
+							}),
+						},
+					]
+		})
+		const matched = candidates.find((candidate) =>
+			sameAddress(candidate.address, claimedSafe),
+		)
+		if (matched === undefined) {
 			fail(
 				4,
-				'safeAddress is not the CREATE2 address of the canonical initializer',
-				safe,
+				'safeAddress is not the CREATE2 address of a canonical initializer',
+				candidates
+					.map((candidate) => `${candidate.version}: ${candidate.address}`)
+					.join(' | '),
 				claimedSafe,
 			)
 		}
+		const safeVersion = matched.version
+		const safe = matched.address
+		if (
+			initializerVersion !== undefined &&
+			initializerVersion !== safeVersion
+		) {
+			fail(
+				4,
+				'customerSafeInitializer and safeAddress belong to different templates',
+				safeVersion,
+				initializerVersion,
+			)
+		}
+		if (
+			prepared.customerSafeTemplate !== undefined &&
+			prepared.customerSafeTemplate !== safeVersion
+		) {
+			fail(
+				4,
+				'customerSafeTemplate is not the template the Safe address derives from',
+				safeVersion,
+				prepared.customerSafeTemplate,
+			)
+		}
+		const initializer = initializers[safeVersion]
 		if (sameAddress(safe, ZERO_ADDRESS) || sameAddress(safe, owner)) {
 			fail(4, 'recomputed Safe address is degenerate', undefined, safe)
 		}
@@ -1324,6 +1430,7 @@ export function verifySponsoredSetup(input: {
 			ok: true,
 			mode,
 			ownerAddress: owner,
+			safeVersion,
 			safeAddress: safe,
 			rolesProxyAddress: rolesProxy,
 			executorSafeAddress: executorSafe,
