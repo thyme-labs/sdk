@@ -19,6 +19,10 @@
 			"types": "./dist/archive-reader.d.ts",
 			"import": "./dist/archive-reader.js"
 		},
+		"./archive-writer": {
+			"types": "./dist/archive-writer.d.ts",
+			"import": "./dist/archive-writer.js"
+		},
 		"./lifecycle": {
 			"types": "./dist/lifecycle.d.ts",
 			"import": "./dist/lifecycle.js"

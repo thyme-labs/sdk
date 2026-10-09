@@ -4,6 +4,7 @@ export default defineConfig({
 	entry: [
 		'src/index.ts',
 		'src/archive-reader.ts',
+		'src/archive-writer.ts',
 		'src/lifecycle.ts',
 		'src/schema-extractor.ts',
 		'src/task-runtime.ts',
