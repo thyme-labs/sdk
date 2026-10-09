@@ -10,18 +10,22 @@ import {
 	toEventSelector,
 } from 'viem'
 import {
+	CUSTOMER_SAFE_TEMPLATES,
+	type CustomerSafeTemplate,
 	executorSafeSaltNonce,
 	isCanonicalProxyCreationCode,
-	ROLES_PINS,
 	ROLES_STACK,
 	recomputeExecutorSafeAddress,
 	rolesProxyRuntimeCode,
+	runnableVersions,
+	SAFE_1_5_0_STACK,
 	SAFE_FALLBACK_HANDLER_SLOT,
 	SAFE_GUARD_SLOT,
+	SAFE_MODULE_GUARD_SLOT,
 	SAFE_MODULE_SENTINEL,
 	SAFE_PROXY_RUNTIME_HASH,
 	SAFE_SINGLETON_SLOT,
-	SAFE_VERSION,
+	type SafeVersion,
 	ZERO_ADDRESS,
 } from './roles-template'
 import { sameAddress } from './roles-verifier'
@@ -46,7 +50,7 @@ import { sameAddress } from './roles-verifier'
 /**
  * Emitted by the Safe itself at the end of `setup()`; `initializer` is the
  * `to` the birth delegatecall ran against, so `0x0` proves no delegatecall
- * happened at birth. Signature from Safe 1.4.1 `Safe.sol`.
+ * happened at birth. Same signature in Safe 1.4.1 and 1.5.0 `Safe.sol`.
  */
 export const SAFE_SETUP_EVENT = parseAbiItem(
 	'event SafeSetup(address indexed initiator, address[] owners, uint256 threshold, address initializer, address fallbackHandler)',
@@ -66,7 +70,7 @@ export const EXECUTION_SUCCESS_EVENT = parseAbiItem(
  * proxy exists and `setup()` has returned. Only the factory's code can emit
  * from the factory's address, and CREATE2 succeeds at an address once, so
  * exactly one `ProxyCreation(proxy = safe)` exists for a Safe and it sits in
- * the transaction that created it.
+ * the transaction that created it. Same signature in both factory versions.
  */
 export const PROXY_CREATION_EVENT = parseAbiItem(
 	'event ProxyCreation(address indexed proxy, address singleton)',
@@ -121,21 +125,23 @@ export type ScanWindow = {
 }
 
 /**
- * `SafeProxyFactory.proxyCreationCode()` read from the chain and accepted only
- * when it hashes to the pin. Throws otherwise: nothing can be derived from an
- * unknown creation code.
+ * `proxyCreationCode()` of the `version` SafeProxyFactory, read from the chain
+ * and accepted only when it hashes to the pin. Throws otherwise: nothing can
+ * be derived from an unknown creation code.
  */
 export async function readPinnedProxyCreationCode(
 	client: PublicClient,
+	version: SafeVersion = '1.4.1',
 ): Promise<Hex> {
+	const template = CUSTOMER_SAFE_TEMPLATES[version]
 	const code = await client.readContract({
-		address: ROLES_PINS.SAFE_PROXY_FACTORY,
+		address: template.factory,
 		abi: safeProxyFactoryAbi,
 		functionName: 'proxyCreationCode',
 	})
-	if (!isCanonicalProxyCreationCode(code)) {
+	if (!isCanonicalProxyCreationCode(code, version)) {
 		throw new Error(
-			`SafeProxyFactory.proxyCreationCode() on this chain hashes to ${keccak256(code)}, not the pinned ${ROLES_PINS.CANONICAL_PROXY_CREATION_CODE_HASH}; this is not the audited Safe 1.4.1 factory`,
+			`SafeProxyFactory ${version} .proxyCreationCode() on this chain hashes to ${keccak256(code)}, not the pinned ${template.proxyCreationCodeHash}; this is not the audited Safe ${version} factory`,
 		)
 	}
 	return code
@@ -219,7 +225,7 @@ export type SafeSetupLookup =
 /**
  * Proves that `log` is the Safe's birth log or explains why it is not: the
  * transaction holding it must carry `ProxyCreation(proxy = safe)` from the
- * pinned factory and exactly one `SafeSetup` from the Safe, with the
+ * pinned `factory` and exactly one `SafeSetup` from the Safe, with the
  * factory's log AFTER the Safe's (the factory emits only once `setup()` has
  * returned). A forged log fails the first test; a forgery emitted by the
  * birth initializer itself fails the second. `SafeSetup` logs are counted by
@@ -228,6 +234,7 @@ export type SafeSetupLookup =
 async function proveBirthLog(
 	client: PublicClient,
 	safe: Address,
+	factory: Address,
 	log: { transactionHash: Hex; blockHash: Hex; logIndex: number },
 ): Promise<string | null> {
 	const receipt = await client.getTransactionReceipt({
@@ -253,12 +260,12 @@ async function proveBirthLog(
 		strict: true,
 	}).filter(
 		(entry) =>
-			sameAddress(entry.address, ROLES_PINS.SAFE_PROXY_FACTORY) &&
+			sameAddress(entry.address, factory) &&
 			sameAddress(entry.args.proxy, safe),
 	)
 	const [creation] = creations
 	if (creations.length !== 1 || creation === undefined) {
-		return `the newest SafeSetup log of ${safe} (transaction ${log.transactionHash}) is not in the transaction that created the Safe through the SafeProxyFactory ${ROLES_PINS.SAFE_PROXY_FACTORY}; it was emitted by code the Safe delegatecalled — do not fund it`
+		return `the newest SafeSetup log of ${safe} (transaction ${log.transactionHash}) is not in the transaction that created the Safe through the SafeProxyFactory ${factory}; it was emitted by code the Safe delegatecalled — do not fund it`
 	}
 	if (creation.logIndex <= onlySetup.logIndex) {
 		return `the SafeSetup log of ${safe} (transaction ${log.transactionHash}, log ${onlySetup.logIndex}) was emitted after the SafeProxyFactory's ProxyCreation (log ${creation.logIndex}), which the genuine setup() cannot do — do not fund it`
@@ -266,11 +273,15 @@ async function proveBirthLog(
 	return null
 }
 
-/** The Safe's genuine `SafeSetup` log, proven to be the birth log. */
+/**
+ * The Safe's genuine `SafeSetup` log, proven to be the birth log of a proxy
+ * the `version` SafeProxyFactory created.
+ */
 export async function findSafeSetup(
 	client: PublicClient,
 	safe: Address,
 	window: ScanWindow,
+	version: SafeVersion = '1.4.1',
 ): Promise<SafeSetupLookup> {
 	const log = await scanLogs(window, async ({ fromBlock, toBlock }) => {
 		const logs = await client.getLogs({
@@ -283,7 +294,12 @@ export async function findSafeSetup(
 		return logs.filter((entry) => !entry.removed)
 	})
 	if (!log) return { status: 'absent' }
-	const reason = await proveBirthLog(client, safe, log)
+	const reason = await proveBirthLog(
+		client,
+		safe,
+		CUSTOMER_SAFE_TEMPLATES[version].factory,
+		log,
+	)
 	if (reason) {
 		return {
 			status: 'not_canonical',
@@ -439,14 +455,24 @@ async function attempt(
 	}
 }
 
-/** Every pinned address must hold the audited runtime before anything else means anything. */
-export async function verifyStackPins(client: PublicClient): Promise<CheckRow> {
+/**
+ * Every pinned address must hold the audited runtime before anything else
+ * means anything. The 1.5.0 contracts are checked only when `versions` names
+ * 1.5.0, so a 1.4.1 profile still verifies on a chain without them.
+ */
+export async function verifyStackPins(
+	client: PublicClient,
+	versions: readonly SafeVersion[] = ['1.4.1'],
+): Promise<CheckRow> {
+	const stack = versions.includes('1.5.0')
+		? [...ROLES_STACK, ...SAFE_1_5_0_STACK]
+		: ROLES_STACK
 	return attempt(
 		'stack',
 		'pinned contracts hold the audited runtime',
 		async () => {
 			const mismatches: string[] = []
-			for (const entry of ROLES_STACK) {
+			for (const entry of stack) {
 				const code = await client.getCode({ address: entry.address })
 				const hash = code ? keccak256(code) : '(no code)'
 				if (hash !== entry.runtimeHash) {
@@ -456,14 +482,14 @@ export async function verifyStackPins(client: PublicClient): Promise<CheckRow> {
 			return mismatches.length === 0
 				? {
 						status: 'pass',
-						value: `${ROLES_STACK.length} contracts match their pinned keccak256`,
+						value: `${stack.length} contracts match their pinned keccak256`,
 					}
 				: {
 						status: 'fail',
 						value: mismatches.join('; '),
-						expected: ROLES_STACK.map(
-							(entry) => `${entry.name}: ${entry.runtimeHash}`,
-						).join('; '),
+						expected: stack
+							.map((entry) => `${entry.name}: ${entry.runtimeHash}`)
+							.join('; '),
 					}
 		},
 	)
@@ -475,7 +501,10 @@ export type PostHocInput = {
 	rolesProxy: Address
 	roleKey: Hex
 	profileId: string
+	/** SafeProxyFactory 1.4.1's creation code: the executor Safe's. */
 	proxyCreationCode: Hex
+	/** The template the customer Safe was born on (default 1.4.1). */
+	safeVersion?: SafeVersion
 	/** Expect an `ExecutionSuccess` log carrying this digest. */
 	digest?: Hex
 	window: ScanWindow
@@ -492,12 +521,36 @@ export type PostHocResult = {
  * The ten checks the Thyme console shows after activation, read here through
  * the caller's RPC and compared against the caller's own derivations, plus
  * the executor-Safe derivation from the Roles proxy's own logs.
+ *
+ * Rows 3, 5 and 6 accept a 1.4.1 Safe upgraded in place to 1.5.0: the
+ * upgrade is an owner transaction that swaps the singleton (and usually the
+ * fallback handler) for other audited deployments. The proxy runtime and the
+ * birth log (row 9) still prove the template the Safe was born on.
  */
 export async function runPostHocChecks(
 	client: PublicClient,
 	input: PostHocInput,
 ): Promise<PostHocResult> {
 	const { safe, owner, rolesProxy, roleKey, window } = input
+	const born = input.safeVersion ?? '1.4.1'
+	const template = CUSTOMER_SAFE_TEMPLATES[born]
+	const runnable = runnableVersions(born)
+	const singletons = runnable.map(
+		(version) => CUSTOMER_SAFE_TEMPLATES[version].singleton,
+	)
+	const handlers = runnable.map(
+		(version) => CUSTOMER_SAFE_TEMPLATES[version].fallbackHandler,
+	)
+	const upgradeNote = (current: SafeVersion | undefined) =>
+		current !== undefined && current !== born
+			? ` (upgraded in place from ${born})`
+			: ''
+	const versionOfSingleton = (singleton: Address | undefined) =>
+		runnable.find(
+			(version) =>
+				singleton !== undefined &&
+				sameAddress(singleton, CUSTOMER_SAFE_TEMPLATES[version].singleton),
+		)
 	const rows: CheckRow[] = []
 
 	rows.push(
@@ -531,17 +584,21 @@ export async function runPostHocChecks(
 			}
 		}),
 	)
+	const expectedVersions = runnable
+		.map((version) => `'${version}'`)
+		.join(' or ')
 	rows.push(
-		await attempt('3', `VERSION() == '${SAFE_VERSION}'`, async () => {
+		await attempt('3', `VERSION() == ${expectedVersions}`, async () => {
 			const version = await client.readContract({
 				address: safe,
 				abi: safeReadAbi,
 				functionName: 'VERSION',
 			})
+			const current = runnable.find((candidate) => candidate === version)
 			return {
-				status: version === SAFE_VERSION ? 'pass' : 'fail',
-				value: version,
-				expected: SAFE_VERSION,
+				status: current !== undefined ? 'pass' : 'fail',
+				value: `${version}${upgradeNote(current)}`,
+				expected: expectedVersions,
 			}
 		}),
 	)
@@ -569,7 +626,7 @@ export async function runPostHocChecks(
 	rows.push(
 		await attempt(
 			'5',
-			'Safe proxy runtime and singleton are the pinned 1.4.1',
+			`Safe proxy runtime is the pinned ${born}, singleton a pinned SafeL2`,
 			async () => {
 				const [code, singletonWord] = await Promise.all([
 					client.getCode({ address: safe }),
@@ -577,38 +634,41 @@ export async function runPostHocChecks(
 				])
 				const codeHash = code && code !== '0x' ? keccak256(code) : undefined
 				const singleton = slotAddress(singletonWord)
+				const current = versionOfSingleton(singleton)
 				const ok =
-					codeHash === SAFE_PROXY_RUNTIME_HASH &&
-					singleton !== undefined &&
-					sameAddress(singleton, ROLES_PINS.SAFE_L2_SINGLETON)
+					codeHash === template.proxyRuntimeHash && current !== undefined
 				return {
 					status: ok ? 'pass' : 'fail',
-					value: `code ${codeHash ?? '(none)'}; singleton ${singleton ?? singletonWord ?? '(none)'}`,
-					expected: `code ${SAFE_PROXY_RUNTIME_HASH}; singleton ${ROLES_PINS.SAFE_L2_SINGLETON}`,
+					value: `code ${codeHash ?? '(none)'}; singleton ${singleton ?? singletonWord ?? '(none)'}${current ? ` = SafeL2 ${current}${upgradeNote(current)}` : ''}`,
+					expected: `code ${template.proxyRuntimeHash}; singleton ${singletons.join(' or ')}`,
 				}
 			},
 		),
 	)
 	rows.push(
-		await attempt('6', 'fallback handler pinned, guard empty', async () => {
-			const [handlerWord, guardWord] = await Promise.all([
+		await attempt('6', 'fallback handler pinned, guards empty', async () => {
+			const [handlerWord, guardWord, moduleGuardWord] = await Promise.all([
 				client.getStorageAt({
 					address: safe,
 					slot: SAFE_FALLBACK_HANDLER_SLOT,
 				}),
 				client.getStorageAt({ address: safe, slot: SAFE_GUARD_SLOT }),
+				client.getStorageAt({ address: safe, slot: SAFE_MODULE_GUARD_SLOT }),
 			])
 			const handler = slotAddress(handlerWord)
 			const guard = slotAddress(guardWord)
+			const moduleGuard = slotAddress(moduleGuardWord)
 			const ok =
 				handler !== undefined &&
-				sameAddress(handler, ROLES_PINS.SAFE_FALLBACK_HANDLER) &&
+				handlers.some((pinned) => sameAddress(handler, pinned)) &&
 				guard !== undefined &&
-				sameAddress(guard, ZERO_ADDRESS)
+				sameAddress(guard, ZERO_ADDRESS) &&
+				moduleGuard !== undefined &&
+				sameAddress(moduleGuard, ZERO_ADDRESS)
 			return {
 				status: ok ? 'pass' : 'fail',
-				value: `handler ${handler ?? handlerWord ?? '(none)'}; guard ${guard ?? guardWord ?? '(none)'}`,
-				expected: `handler ${ROLES_PINS.SAFE_FALLBACK_HANDLER}; guard ${ZERO_ADDRESS}`,
+				value: `handler ${handler ?? handlerWord ?? '(none)'}; guard ${guard ?? guardWord ?? '(none)'}; module guard ${moduleGuard ?? moduleGuardWord ?? '(none)'}`,
+				expected: `handler ${handlers.join(' or ')}; guard ${ZERO_ADDRESS}; module guard ${ZERO_ADDRESS}`,
 			}
 		}),
 	)
@@ -666,7 +726,7 @@ export async function runPostHocChecks(
 	// 9. The birth log, proven to be the birth log.
 	let safeSetup: SafeSetupLookup
 	try {
-		safeSetup = await findSafeSetup(client, safe, window)
+		safeSetup = await findSafeSetup(client, safe, window, born)
 	} catch (error) {
 		safeSetup = { status: 'absent' }
 		rows.push({
@@ -677,7 +737,7 @@ export async function runPostHocChecks(
 		})
 	}
 	if (rows.length === 8) {
-		rows.push(describeSafeSetup(safeSetup, owner, window))
+		rows.push(describeSafeSetup(safeSetup, owner, window, template))
 	}
 	const birthBlock =
 		safeSetup.status === 'canonical' ? safeSetup.log.blockNumber : undefined
@@ -796,10 +856,11 @@ function describeSafeSetup(
 	lookup: SafeSetupLookup,
 	owner: Address,
 	window: ScanWindow,
+	template: CustomerSafeTemplate,
 ): CheckRow {
 	const id = '9'
 	const label = 'SafeSetup log: canonical birth'
-	const expected = `initiator ${ROLES_PINS.SAFE_PROXY_FACTORY}; owners ${describeAddresses([owner])}; threshold 1; initializer ${ZERO_ADDRESS}; handler ${ROLES_PINS.SAFE_FALLBACK_HANDLER}; in the factory creation transaction`
+	const expected = `initiator ${template.factory}; owners ${describeAddresses([owner])}; threshold 1; initializer ${ZERO_ADDRESS}; handler ${template.fallbackHandler}; in the factory creation transaction`
 	if (lookup.status === 'absent') {
 		return {
 			id,
@@ -820,8 +881,8 @@ function describeSafeSetup(
 	}
 	const log = lookup.log
 	const problems: string[] = []
-	if (!sameAddress(log.initiator, ROLES_PINS.SAFE_PROXY_FACTORY)) {
-		problems.push('initiator is not the SafeProxyFactory')
+	if (!sameAddress(log.initiator, template.factory)) {
+		problems.push(`initiator is not the SafeProxyFactory ${template.version}`)
 	}
 	const [onlyOwner] = log.owners
 	if (
@@ -837,9 +898,9 @@ function describeSafeSetup(
 			`born with a delegatecall initializer ${log.initializer} — do not fund it`,
 		)
 	}
-	if (!sameAddress(log.fallbackHandler, ROLES_PINS.SAFE_FALLBACK_HANDLER)) {
+	if (!sameAddress(log.fallbackHandler, template.fallbackHandler)) {
 		problems.push(
-			'fallback handler is not the pinned CompatibilityFallbackHandler',
+			`fallback handler is not the pinned CompatibilityFallbackHandler ${template.version}`,
 		)
 	}
 	const value = `block ${log.blockNumber}; tx ${log.transactionHash}; initiator ${log.initiator}; owners ${describeAddresses(log.owners)}; threshold ${log.threshold}; initializer ${log.initializer}; handler ${log.fallbackHandler}`

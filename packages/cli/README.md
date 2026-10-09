@@ -465,13 +465,28 @@ every decoded inner call. `--mode scope-update` (with `--previous-allowlist`) an
 sign.
 
 Post-hoc mode prints the ten activation checks (owners, threshold, version,
-modules, proxy runtime and singleton, fallback handler and guard, Roles proxy
+modules, proxy runtime and singleton, fallback handler and guards, Roles proxy
 runtime, Roles owner/avatar/target, the `SafeSetup` birth log proven to sit in the
 factory's creation transaction, and the `ExecutionSuccess` log for `--digest`),
 plus the executor Safe derived from the Roles proxy's own `AssignRoles` logs.
 Exit codes: 0 all passed, 1 a check failed, 2 usage or input error. `--json`
 prints a machine-readable result. Run `thyme verify roles-profile --help` for the
 trust-model background.
+
+The customer Safe is born on one of two pinned templates, Safe 1.4.1 or Safe 1.5.0
+(each with its own SafeProxyFactory, SafeL2 singleton and
+CompatibilityFallbackHandler; the executor Safe is always 1.4.1). The template is
+never read from the request: by default the command derives the Safe from both,
+and the request's Safe (pre-signature) or the deployed Safe (post-hoc) must be
+exactly one of them. `--safe-version 1.4.1|1.5.0` requires one. A 1.4.1 Safe that
+was upgraded in place to 1.5.0 from Safe{Wallet} still verifies as 1.4.1-born:
+the version, singleton and handler rows accept the 1.5.0 deployments, and the
+birth log still proves the 1.4.1 template.
+
+A profile can also recreate, at the same address, a Safe another profile has on a
+different chain. That Safe's salt derives from the other profile's id: pass it as
+`--salt-profile`. The Roles proxy, role key and executor Safe still derive from
+`--profile`.
 
 ## Environment Variables
 
