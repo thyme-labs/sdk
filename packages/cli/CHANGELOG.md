@@ -1,5 +1,13 @@
 # @thyme-labs/cli
 
+## 0.12.2
+
+### Patch Changes
+
+- 360a9ed: Expose a runtime-neutral deterministic task archive writer and share it between SDK and CLI compression. Preserve existing CLI archive bytes and checksums, including permissions manifests.
+- Updated dependencies [360a9ed]
+  - @thyme-labs/sdk@0.9.0
+
 ## 0.12.1
 
 ### Patch Changes
