@@ -74,7 +74,7 @@ A typical pipeline authenticates through the environment rather than `thyme logi
 
 ```bash
 export THYME_AUTH_TOKEN="$THYME_API_KEY"
-export THYME_API_URL=https://functions.thymelabs.io/http
+export THYME_API_URL=https://flow.thymelabs.io/http
 thyme upload my-task --ci -w "$THYME_WORKSPACE_ID" -p "$THYME_PROJECT_ID" --tag "v$BUILD_NUMBER"
 ```
 
@@ -199,7 +199,7 @@ Authenticate with Thyme Cloud. Standard login mints a personal API key for uploa
 `--management` mints a separate full-scope key permanently bound to the workspace you
 approve. Credentials are saved to `~/.thyme/config.json` (file mode `0600`) — **not**
 to `.env`. Revoking a key in
-**[Console → API Keys](https://functions.thymelabs.io/dashboard/api-keys)** ends the CLI
+**[Console → API Keys](https://flow.thymelabs.io/dashboard/api-keys)** ends the CLI
 session.
 
 ```bash
@@ -223,7 +223,7 @@ approve. It then polls for the minted key (every 2s, up to 5 minutes).
 Open the URL on another device and enter the code to approve.
 
 **Token flow (`--token`):** paste an API key you generated in
-**[Console → API Keys](https://functions.thymelabs.io/dashboard/api-keys) → Create Key**
+**[Console → API Keys](https://flow.thymelabs.io/dashboard/api-keys) → Create Key**
 (the full key is shown once). The key must be at least 10 characters. Without a terminal
 the key is read from stdin instead of prompted, so the key never lands in your shell
 history or the process list:
@@ -499,8 +499,8 @@ RPC_URL=https://eth-sepolia.g.alchemy.com/v2/your-key
 # Account exposed as ctx.account and used as the sender for --simulate
 SIMULATE_ACCOUNT=0x742d35Cc6634C0532925a3b844Bc454e4438f44e
 
-# Cloud API URL (optional; defaults to https://functions.thymelabs.io/http)
-THYME_API_URL=https://functions.thymelabs.io/http
+# Cloud API URL (optional; defaults to https://flow.thymelabs.io/http)
+THYME_API_URL=https://flow.thymelabs.io/http
 
 # Cloud auth token (config wins; this is a fallback)
 THYME_AUTH_TOKEN=your-token
@@ -516,7 +516,7 @@ Notes:
 - The auth token is normally stored in `~/.thyme/config.json` by `thyme login`. For
   later commands the config `authToken` takes precedence over `THYME_AUTH_TOKEN`.
 - The API URL resolves in this order: `THYME_API_URL` env → `~/.thyme/config.json`
-  `apiUrl` → built-in default (`https://functions.thymelabs.io/http`). Use `thyme api-url`
+  `apiUrl` → built-in default (`https://flow.thymelabs.io/http`). Use `thyme api-url`
   to see the resolved value.
 - `THYME_CI` and `THYME_NON_INTERACTIVE` (and the standard `CI` /
   `CONTINUOUS_INTEGRATION`) disable prompts — see

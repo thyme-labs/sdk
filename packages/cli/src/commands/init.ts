@@ -108,7 +108,7 @@ SIMULATE_ACCOUNT=0x742d35Cc6634C0532925a3b844Bc454e4438f44e
 # Cloud authentication (set by \`thyme login\`)
 THYME_AUTH_TOKEN=
 
-# Cloud API URL (optional - defaults to https://functions.thymelabs.io/http)
+# Cloud API URL (optional - defaults to https://flow.thymelabs.io/http)
 # Set this only to target a different Thyme deployment.
 THYME_API_URL=
 `

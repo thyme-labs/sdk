@@ -169,7 +169,7 @@ describe('stored credentials', () => {
 })
 
 describe('API URL resolution', () => {
-	const DEFAULT_URL = 'https://functions.thymelabs.io/http'
+	const DEFAULT_URL = 'https://flow.thymelabs.io/http'
 
 	test('falls back to the built-in default when nothing is configured', () => {
 		expect(config.getApiUrl()).toBe(DEFAULT_URL)

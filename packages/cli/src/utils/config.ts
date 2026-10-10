@@ -121,7 +121,7 @@ export function removeCredential(id: string): void {
 	})
 }
 
-const DEFAULT_API_URL = 'https://functions.thymelabs.io/http'
+const DEFAULT_API_URL = 'https://flow.thymelabs.io/http'
 
 export function getApiUrl(): string {
 	// 1. Environment variable or .env file (highest priority, 12-factor style)
