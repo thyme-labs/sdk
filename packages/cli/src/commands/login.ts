@@ -396,7 +396,7 @@ export async function loginCommand(options: LoginOptions = {}) {
 	let apiUrl = resolveApiUrl()
 	if (!apiUrl) {
 		error(
-			'THYME_API_URL is not set. Please set it to your Thyme Cloud API URL (e.g., https://functions.thymelabs.io/http)',
+			'THYME_API_URL is not set. Please set it to your Thyme Cloud API URL (e.g., https://flow.thymelabs.io/http)',
 		)
 		process.exit(1)
 	}
