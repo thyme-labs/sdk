@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { strToU8, zipSync } from 'fflate'
+import { buildTaskArchive } from '@thyme-labs/sdk/archive-writer'
 
 export interface CompressResult {
 	zipBuffer: Buffer
@@ -21,25 +21,10 @@ export function compressTask(
 	bundle: string,
 	permissions?: string,
 ): CompressResult {
-	// ZIP's DOS timestamp starts at 1980. Construct it in local time because
-	// fflate serializes local date fields; this yields identical bytes in every
-	// timezone.
-	const archiveMtime = new Date(1980, 0, 1, 0, 0, 0)
 	const zipBuffer = Buffer.from(
-		zipSync(
-			{
-				'source.ts': strToU8(source),
-				'bundle.js': strToU8(bundle),
-				...(permissions === undefined
-					? {}
-					: { 'permissions.json': strToU8(permissions) }),
-			},
-			{
-				level: 6,
-				mtime: archiveMtime,
-			},
-		),
+		buildTaskArchive({ source, bundle, permissions }),
 	)
+
 	const checksum = createHash('sha256').update(zipBuffer).digest('hex')
 
 	return {

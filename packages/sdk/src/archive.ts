@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { strToU8, zipSync } from 'fflate'
+import { buildTaskArchive } from './archive-writer'
 
 export type { DecompressResult } from './archive-reader'
 export { decompressTask } from './archive-reader'
@@ -30,17 +30,7 @@ export function compressTask(
 	bundle: string,
 	permissions?: string,
 ): CompressResult {
-	const files: Record<string, Uint8Array> = {
-		'source.ts': strToU8(source),
-		'bundle.js': strToU8(bundle),
-	}
-	if (typeof permissions === 'string') {
-		files['permissions.json'] = strToU8(permissions)
-	}
-
-	const compressed = zipSync(files, {
-		level: 6, // Balanced compression
-	})
+	const compressed = buildTaskArchive({ source, bundle, permissions })
 
 	// Calculate SHA-256 checksum
 	const checksum = calculateSha256(compressed)
