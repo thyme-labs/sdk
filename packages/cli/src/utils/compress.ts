@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { buildTaskArchive } from '../../../sdk/src/archive-writer'
+import { buildTaskArchive } from '@thyme-labs/sdk/archive-writer'
 
 export interface CompressResult {
 	zipBuffer: Buffer
