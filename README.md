@@ -108,8 +108,21 @@ Gelato Web3 Functions, OpenZeppelin Defender and Chainlink Automation were all r
 
 There is no native event or log trigger: poll the state you need from the task and keep a
 cursor in storage. See [triggers](https://flow.thymelabs.io/docs/concepts/triggers) and
-[profiles](https://flow.thymelabs.io/docs/concepts/profiles). Stuck on a port? Email
-[support@thymelabs.io](mailto:support@thymelabs.io) and we'll help.
+[profiles](https://flow.thymelabs.io/docs/concepts/profiles).
+
+Step-by-step migration guides, with the same function before and after:
+
+- [Gelato Web3 Functions to Thyme Flow](https://flow.thymelabs.io/migrate/gelato-web3-functions)
+- [Chainlink Automation to Thyme Flow](https://flow.thymelabs.io/migrate/chainlink-automation)
+
+To let a coding agent do the port, paste this into Claude Code, Codex, Cursor or any other
+agent (use `thyme-migrate-chainlink` for Chainlink upkeeps):
+
+```text
+Read https://flow.thymelabs.io/docs/skills/thyme-migrate-gelato/SKILL.md and follow it to port the Gelato Web3 Functions in this repository to Thyme Flow. If you support skills, save that file as a skill named thyme-migrate-gelato. Start by listing the functions and triggers you find, port one, run it locally, and ask me before uploading or scheduling anything.
+```
+
+Stuck on a port? Email [support@thymelabs.io](mailto:support@thymelabs.io) and we'll help.
 
 ## The Thyme platform
 
@@ -117,7 +130,7 @@ cursor in storage. See [triggers](https://flow.thymelabs.io/docs/concepts/trigge
 | --- | --- |
 | **[Flow](https://flow.thymelabs.io)** | Onchain automation from your Safe (this repo) |
 | **[Gate](https://gate.thymelabs.io)** | RPC endpoints for mainnets and testnets |
-| **[Atlas](https://atlas.thymelabs.io)** | Managed subgraph hosting and queries |
+| **[Atlas](https://atlas.thymelabs.io)** | Managed subgraph hosting and queries ([moving from Goldsky?](https://atlas.thymelabs.io/migrate/goldsky)) |
 
 ## Packages
 
