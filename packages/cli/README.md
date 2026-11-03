@@ -483,6 +483,35 @@ was upgraded in place to 1.5.0 from Safe{Wallet} still verifies as 1.4.1-born:
 the version, singleton and handler rows accept the 1.5.0 deployments, and the
 birth log still proves the 1.4.1 template.
 
+A rule can also carry argument conditions and a spending budget, enforced on chain by
+Zodiac Roles v2.1.1 (`scopeFunction` and `setAllowance`). Save the allowlist as an
+object instead of an array, and pass it with `--allowlist` for a setup request:
+
+```json
+{
+  "rules": [
+    {
+      "target": "0x…",
+      "selector": "0xa9059cbb",
+      "functionSignature": "transfer(address,uint256)",
+      "conditions": [
+        { "param": 0, "op": "oneOf", "values": ["0x…", "0x…"] },
+        { "param": 1, "op": "withinAllowance", "allowance": "daily" }
+      ]
+    }
+  ],
+  "allowances": [{ "name": "daily", "refill": "100000000", "period": 86400 }]
+}
+```
+
+Operators are `equalTo`, `oneOf`, `lessThan` and `greaterThan` (unsigned integers) and
+`withinAllowance`; `callAllowance` on a rule counts its calls against a budget. Check 12
+rebuilds every condition tree and every `setAllowance` call from this file and compares
+them byte for byte with the request, so a changed recipient, a dropped limit, an inflated
+budget, a budget keyed for another role or a start time other than "now" all fail. Only
+setup requests are verified this way: `--mode scope-update` refuses a request that
+carries conditions or budgets.
+
 A profile can also recreate, at the same address, a Safe another profile has on a
 different chain. That Safe's salt derives from the other profile's id: pass it as
 `--salt-profile`. The Roles proxy, role key and executor Safe still derive from
