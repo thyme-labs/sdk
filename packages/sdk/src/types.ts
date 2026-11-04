@@ -13,6 +13,48 @@ export type JsonValue =
 export type JsonObject = { [key: string]: JsonValue }
 
 /**
+ * What started the current run.
+ */
+export type TriggerContext =
+	| { type: 'cron' }
+	| { type: 'interval' }
+	| { type: 'manual' }
+	| { type: 'webhook'; name?: string }
+	| EventTriggerContext
+
+/**
+ * The onchain log that started an event-triggered run. Each matching log
+ * starts its own run.
+ */
+export interface EventTriggerContext {
+	type: 'event'
+	chainId: number
+	log: {
+		address: Address
+		topics: Hex[]
+		data: Hex
+		blockNumber: bigint
+		blockHash: Hex
+		transactionHash: Hex
+		transactionIndex: number
+		/** Position of the log within its block */
+		logIndex: number
+	}
+	/** Unix timestamp of the log's block, in seconds */
+	blockTimestamp: number
+	event: {
+		name: string
+		/** Human-readable ABI item the trigger matches on */
+		signature: string
+		/**
+		 * Arguments decoded with `signature`; undefined when decoding failed.
+		 * Use `decodeTriggerEvent` for typed arguments.
+		 */
+		args?: Record<string, unknown> | readonly unknown[]
+	}
+}
+
+/**
  * Context provided to task execution
  */
 export interface ThymeContext<TArgs> {
@@ -33,6 +75,12 @@ export interface ThymeContext<TArgs> {
 	secrets: Record<string, string>
 	/** Persistent JSON storage scoped to this executable */
 	storage: JsonObject
+	/**
+	 * What started this run: a schedule, a manual or webhook run, or an onchain
+	 * event. Lifecycle callbacks see the same value as `run`. Undefined on
+	 * runners that predate triggers. Narrow event runs with `isEventTrigger`.
+	 */
+	trigger?: TriggerContext
 }
 
 /**

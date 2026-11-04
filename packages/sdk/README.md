@@ -210,8 +210,8 @@ export default defineTask({
 ```
 
 For local runs, put task-specific secrets in `functions/<task>/.env`. The reserved keys
-`THYME_API_URL`, `THYME_AUTH_TOKEN`, `RPC_URL`, and `SIMULATE_ACCOUNT` are not exposed
-through `ctx.secrets`. `SIMULATE_ACCOUNT` is exposed separately as `ctx.account`. In the
+`THYME_API_URL`, `THYME_AUTH_TOKEN`, `RPC_URL`, `SIMULATE_ACCOUNT`, and
+`THYME_TRIGGER_JSON` are not exposed through `ctx.secrets`. `SIMULATE_ACCOUNT` is exposed separately as `ctx.account`. In the
 cloud, secrets are bound to the executable in the Console and injected at runtime.
 
 ## Task Storage
@@ -236,6 +236,54 @@ export default defineTask({
 storage; use `ctx.secrets` for credentials. Local runs read
 `functions/<task>/storage.json` when it exists. By default `thyme run` prints the
 produced storage without overwriting the file; pass `--persist` to write it back.
+
+## Triggers
+
+`ctx.trigger` says what started the run: `{ type: 'cron' }`, `{ type: 'interval' }`,
+`{ type: 'manual' }`, `{ type: 'webhook', name? }`, or `{ type: 'event', ... }` for an
+onchain event trigger. It is `undefined` on runners that predate triggers, so check it
+before use.
+
+An event-triggered executable runs once per matching log. `ctx.trigger` then carries
+the log (`blockNumber` is a `bigint`), its block timestamp in unix seconds, and the
+event's name, signature and decoded `args`. For typed arguments, decode the log against
+the event's ABI yourself:
+
+```typescript
+import { decodeTriggerEvent, defineTask, isEventTrigger, z } from '@thyme-labs/sdk'
+import { parseAbiItem } from 'viem'
+
+const transfer = parseAbiItem(
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
+)
+
+export default defineTask({
+  schema: z.object({}),
+
+  async run(ctx) {
+    if (!isEventTrigger(ctx)) {
+      return { canExec: false, message: 'Only runs on Transfer events' }
+    }
+    const event = decodeTriggerEvent(ctx, transfer)
+    if (!event) {
+      return { canExec: false, message: 'Not a Transfer log' }
+    }
+    ctx.logger.info(
+      `${event.args.from} sent ${event.args.value} in ${ctx.trigger.log.transactionHash}`,
+    )
+    return { canExec: false, message: 'Observed' }
+  },
+})
+```
+
+`decodeTriggerEvent` returns `null` when the run was not started by an event or the
+log does not match the ABI item. Event data is onchain input anyone can produce:
+validate it before acting on it. Lifecycle callbacks get the same `ctx.trigger` as
+`run`.
+
+Locally, `thyme run my-task --event-tx <hash> --event-signature "<event ...>"` replays
+a real log (see the CLI README); without trigger flags, `ctx.trigger` is
+`{ type: 'manual' }`.
 
 ## Lifecycle Callbacks
 

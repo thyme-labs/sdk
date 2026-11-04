@@ -74,6 +74,22 @@ nonInteractiveOptions(
 		.option(
 			'--callback <outcome>',
 			'Callback outcome to simulate: onSuccess, onFail:reverted, onFail:submit, or onFail:timeout (implies --simulate-callbacks)',
+		)
+		.option(
+			'--event-tx <hash>',
+			'Run as if triggered by a log of this transaction (read through RPC_URL)',
+		)
+		.option(
+			'--log-index <n>',
+			'Block-level logIndex of the triggering log (with --event-tx)',
+		)
+		.option(
+			'--event-signature <sig>',
+			'Event ABI signature, e.g. "event Transfer(address indexed from, address indexed to, uint256 value)"; picks the first matching log and decodes ctx.trigger.event.args (with --event-tx)',
+		)
+		.option(
+			'--event <file>',
+			'Run as if triggered by the event payload in this JSON file',
 		),
 ).action((task, options) => runCommand(task, options))
 

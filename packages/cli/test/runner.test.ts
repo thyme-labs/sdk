@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { encodeAbiParameters, encodeEventTopics, parseAbiItem } from 'viem'
 import { checkDeno, runCallbackInDeno, runInDeno } from '../src/deno/runner'
 
 // Whether a real task can actually be executed here. This needs Deno AND a
@@ -218,6 +219,75 @@ describe('runInDeno (integration, requires Deno)', () => {
 		expect(result.success).toBe(true)
 		expect(result.result).toEqual({ canExec: false, message: '5' })
 		expect(result.storage).toEqual({ runs: 5 })
+	}, 60_000)
+
+	test('exposes the run trigger as ctx.trigger', async () => {
+		if (!denoUsable) return
+		const signature =
+			'event Transfer(address indexed from, address indexed to, uint256 value)'
+		const trigger = {
+			type: 'event' as const,
+			chainId: 11155111,
+			eventName: 'Transfer',
+			eventSignature: signature,
+			log: {
+				address: '0xfff9976782d46cc05630d1f6ebab18b2324d6b14',
+				topics: encodeEventTopics({
+					abi: [parseAbiItem(signature)],
+					eventName: 'Transfer',
+					args: { from: TEST_ACCOUNT, to: TEST_ACCOUNT },
+				}),
+				data: encodeAbiParameters([{ type: 'uint256' }], [1000n]),
+				blockNumber: 7_000_000,
+				blockHash: `0x${'ab'.repeat(32)}`,
+				transactionHash: `0x${'cd'.repeat(32)}`,
+				transactionIndex: 3,
+				logIndex: 12,
+			},
+			blockTimestamp: 1_760_000_000,
+		}
+		const { taskPath, root } = makeTask(
+			`    return {
+      canExec: false,
+      message: JSON.stringify({
+        trigger: ctx.trigger,
+        blockNumberIsBigInt: typeof ctx.trigger?.log?.blockNumber === 'bigint',
+        valueIsBigInt: typeof ctx.trigger?.event?.args?.value === 'bigint',
+      }),
+    }`,
+		)
+		const eventRun = await runInDeno(
+			taskPath,
+			{},
+			{ memory: 128, network: false, trigger },
+			root,
+		)
+		expect(eventRun.success).toBe(true)
+		const payload = JSON.parse((eventRun.result as { message: string }).message)
+		expect(payload.blockNumberIsBigInt).toBe(true)
+		expect(payload.valueIsBigInt).toBe(true)
+		expect(payload.trigger).toEqual({
+			type: 'event',
+			chainId: 11155111,
+			log: { ...trigger.log, blockNumber: '7000000' },
+			blockTimestamp: 1_760_000_000,
+			event: {
+				name: 'Transfer',
+				signature,
+				args: { from: TEST_ACCOUNT, to: TEST_ACCOUNT, value: '1000' },
+			},
+		})
+
+		const manualRun = await runInDeno(
+			taskPath,
+			{},
+			{ memory: 128, network: false },
+			root,
+		)
+		expect(manualRun.success).toBe(true)
+		expect(
+			JSON.parse((manualRun.result as { message: string }).message).trigger,
+		).toEqual({ type: 'manual' })
 	}, 60_000)
 
 	test('cannot read project files outside the task directory', async () => {
