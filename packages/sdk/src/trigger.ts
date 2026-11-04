@@ -3,6 +3,8 @@ import {
 	type DecodeEventLogReturnType,
 	decodeEventLog,
 	type Hex,
+	parseAbiItem,
+	toEventSelector,
 } from 'viem'
 import type { EventTriggerContext, TriggerContext } from './types'
 
@@ -30,7 +32,8 @@ export function isEventTrigger<TContext extends { trigger?: TriggerContext }>(
  * Decode the triggering log against `abiEvent` with typed arguments.
  *
  * Returns `null` when the run was not started by an event, or when the log
- * does not match `abiEvent` (different signature or indexed layout).
+ * does not match `abiEvent` (different signature, or different indexed
+ * arguments than the trigger's event signature).
  *
  * @example
  * ```typescript
@@ -51,6 +54,7 @@ export function decodeTriggerEvent<const TEvent extends AbiEvent>(
 	abiEvent: TEvent,
 ): DecodedTriggerEvent<TEvent> | null {
 	if (!isEventTrigger(ctx)) return null
+	if (indexedLayoutDiffers(ctx.trigger.event.signature, abiEvent)) return null
 	const { topics, data } = ctx.trigger.log
 	try {
 		return decodeEventLog({
@@ -61,4 +65,27 @@ export function decodeTriggerEvent<const TEvent extends AbiEvent>(
 	} catch {
 		return null
 	}
+}
+
+/**
+ * True when `signature` is the same event as `abiEvent` but indexes other
+ * arguments. A log does not record which arguments were indexed, so decoding
+ * alone would return them swapped.
+ */
+function indexedLayoutDiffers(signature: string, abiEvent: AbiEvent): boolean {
+	let item: ReturnType<typeof parseAbiItem>
+	try {
+		item = parseAbiItem(signature)
+	} catch {
+		// No usable signature, e.g. a local run without one: decoding decides.
+		return false
+	}
+	return (
+		item.type === 'event' &&
+		toEventSelector(item) === toEventSelector(abiEvent) &&
+		item.inputs.some(
+			(input, i) =>
+				Boolean(input.indexed) !== Boolean(abiEvent.inputs[i]?.indexed),
+		)
+	)
 }

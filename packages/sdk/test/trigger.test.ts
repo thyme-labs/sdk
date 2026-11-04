@@ -72,4 +72,44 @@ describe('decodeTriggerEvent', () => {
 			decodeTriggerEvent({ trigger: eventTrigger }, indexedValue),
 		).toBeNull()
 	})
+
+	test('returns null when the trigger indexes other arguments', () => {
+		// Same topic0 and topic count either way, so only the trigger's
+		// signature tells the layouts apart.
+		const emitted = parseAbiItem('event Pair(uint256 indexed x, uint256 y)')
+		const swapped = parseAbiItem('event Pair(uint256 x, uint256 indexed y)')
+		const trigger: EventTriggerContext = {
+			...eventTrigger,
+			log: {
+				...eventTrigger.log,
+				topics: encodeEventTopics({
+					abi: [emitted],
+					eventName: 'Pair',
+					args: { x: 1n },
+				}),
+				data: encodeAbiParameters([{ type: 'uint256' }], [2n]),
+			},
+			event: {
+				name: 'Pair',
+				signature: 'event Pair(uint256 indexed x, uint256 y)',
+			},
+		}
+		expect(decodeTriggerEvent({ trigger }, swapped)).toBeNull()
+		expect(decodeTriggerEvent({ trigger }, emitted)?.args).toEqual({
+			x: 1n,
+			y: 2n,
+		})
+	})
+
+	test('decodes on the log alone without a usable trigger signature', () => {
+		const trigger: EventTriggerContext = {
+			...eventTrigger,
+			event: { name: '', signature: '' },
+		}
+		expect(decodeTriggerEvent({ trigger }, transfer)?.args).toEqual({
+			from: FROM,
+			to: TO,
+			value: 1000n,
+		})
+	})
 })
