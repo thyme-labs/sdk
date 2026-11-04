@@ -475,14 +475,21 @@ export function normalizePolicyAllowances(input: unknown): PolicyAllowance[] {
 			if (refill !== 0n) {
 				throw invalid(`${label}: a one-time allowance has refill "0"`)
 			}
-			if (item.maxRefill !== undefined) {
-				throw invalid(`${label}: a one-time allowance has no maxRefill`)
-			}
 			if (item.balance === undefined) {
 				throw invalid(`${label}: a one-time allowance needs a balance`)
 			}
 			const balance = parseAmount(item.balance, `${label} balance`)
 			if (balance === 0n) throw invalid(`${label}: balance must be above 0`)
+			// Accept the canonical form too: the editor sends it and stored policies
+			// are normalised again when setup, execution or scope edits read them.
+			if (
+				item.maxRefill !== undefined &&
+				parseAmount(item.maxRefill, `${label} maxRefill`) !== balance
+			) {
+				throw invalid(
+					`${label}: a one-time allowance maxRefill must equal balance`,
+				)
+			}
 			return {
 				name,
 				refill: '0',
