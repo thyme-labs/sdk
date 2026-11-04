@@ -28,6 +28,10 @@ import {
 	type ScanWindow,
 	verifyStackPins,
 } from '../utils/roles-chain'
+import type {
+	ParamCondition,
+	PolicyAllowanceInput,
+} from '../utils/roles-conditions'
 import {
 	CUSTOMER_SAFE_TEMPLATES,
 	customerSafeSaltNonce,
@@ -129,6 +133,8 @@ Pre-signature mode (--request)
 
   Download the signature request from the console before you sign, save the
   allowlist you typed as JSON ([{ "target": "0x…", "selector": "0x…" }]), then:
+  (A call narrowed by argument limits or a budget takes an object instead,
+  { "rules": [...], "allowances": [...] }; see "Conditions and budgets" below.)
 
     thyme verify roles-profile --profile <id> --owner <your wallet> \\
       --request request.json --allowlist allowlist.json
@@ -144,6 +150,25 @@ Pre-signature mode (--request)
   For a scope update pass --mode scope-update and --previous-allowlist with
   the allowlist live before the change; the request must revoke every rule
   you drop explicitly. For a revocation pass --mode revocation (no allowlist).
+
+Conditions and budgets
+
+  A rule may carry a full function signature and argument conditions, and a
+  policy may declare budgets that conditions and calls draw on:
+
+    { "rules": [{ "target": "0x…", "selector": "0xa9059cbb",
+        "functionSignature": "transfer(address,uint256)",
+        "conditions": [
+          { "param": 0, "op": "oneOf", "values": ["0x…", "0x…"] },
+          { "param": 1, "op": "withinAllowance", "allowance": "daily" } ] }],
+      "allowances": [{ "name": "daily", "refill": "100000000", "period": 86400 }] }
+
+  Operators: equalTo, oneOf, lessThan, greaterThan (unsigned integers only)
+  and withinAllowance. Check 12 rebuilds every condition tree and every
+  setAllowance call from this file and compares them byte for byte with the
+  request, so a changed recipient, a dropped limit, an inflated budget, a budget
+  keyed for another role or a start time other than "now" all fail. This is
+  verified for setup requests; a scope update with conditions is refused.
 
 Safe versions (--safe-version)
 
@@ -504,7 +529,73 @@ function parseRules(value: unknown, label: string): RolesScopeRule[] {
 				`${label}: rule ${index} must have string target and selector`,
 			)
 		}
-		return { target: entry.target, selector: entry.selector }
+		// Shapes only; the verifier validates and canonicalises the contents.
+		if (
+			entry.functionSignature !== undefined &&
+			typeof entry.functionSignature !== 'string'
+		) {
+			throw new UsageError(
+				`${label}: rule ${index} functionSignature must be a string`,
+			)
+		}
+		if (entry.conditions !== undefined && !Array.isArray(entry.conditions)) {
+			throw new UsageError(
+				`${label}: rule ${index} conditions must be an array`,
+			)
+		}
+		if (
+			entry.callAllowance !== undefined &&
+			typeof entry.callAllowance !== 'string'
+		) {
+			throw new UsageError(
+				`${label}: rule ${index} callAllowance must be a string`,
+			)
+		}
+		return {
+			target: entry.target,
+			selector: entry.selector,
+			...(entry.functionSignature !== undefined
+				? { functionSignature: entry.functionSignature }
+				: {}),
+			...(entry.conditions !== undefined
+				? { conditions: entry.conditions as ParamCondition[] }
+				: {}),
+			...(entry.callAllowance !== undefined
+				? { callAllowance: entry.callAllowance }
+				: {}),
+		}
+	})
+}
+
+/** The `allowances` of an allowlist object, as typed; `undefined` for a bare array. */
+function parseAllowances(
+	value: unknown,
+	label: string,
+): PolicyAllowanceInput[] | undefined {
+	if (!isRecord(value) || value.allowances === undefined) return undefined
+	if (!Array.isArray(value.allowances)) {
+		throw new UsageError(`${label}: allowances must be an array`)
+	}
+	return value.allowances.map((entry, index) => {
+		if (
+			!isRecord(entry) ||
+			typeof entry.name !== 'string' ||
+			typeof entry.refill !== 'string' ||
+			typeof entry.period !== 'number' ||
+			(entry.maxRefill !== undefined && typeof entry.maxRefill !== 'string') ||
+			(entry.balance !== undefined && typeof entry.balance !== 'string')
+		) {
+			throw new UsageError(
+				`${label}: allowance ${index} must have a string name and refill, a numeric period and optional string maxRefill and balance`,
+			)
+		}
+		return {
+			name: entry.name,
+			refill: entry.refill,
+			period: entry.period,
+			...(entry.maxRefill !== undefined ? { maxRefill: entry.maxRefill } : {}),
+			...(entry.balance !== undefined ? { balance: entry.balance } : {}),
+		}
 	})
 }
 
@@ -616,12 +707,12 @@ async function preSignature(
 				'--allowlist <file> is required for setup and scope-update requests',
 			)
 		}
+		const typed = readJsonFile(options.allowlist, '--allowlist')
+		const allowances = parseAllowances(typed, '--allowlist')
 		policy = {
 			mode: 'allowlist',
-			rules: parseRules(
-				readJsonFile(options.allowlist, '--allowlist'),
-				'--allowlist',
-			),
+			rules: parseRules(typed, '--allowlist'),
+			...(allowances ? { allowances } : {}),
 		}
 	}
 	const previousRules =

@@ -14,7 +14,18 @@ import {
 	parseAbi,
 	size,
 	sliceHex,
+	toFunctionSelector,
 } from 'viem'
+import {
+	assertAllowancesUsed,
+	buildConditionTree,
+	type ConditionFlat,
+	normalizePolicyAllowances,
+	normalizeRuleConditions,
+	type ParamCondition,
+	type PolicyAllowanceInput,
+	toRolesAllowances,
+} from './roles-conditions'
 import {
 	buildCanonicalExecutorInitializer,
 	buildCanonicalSafeInitializer,
@@ -59,11 +70,22 @@ export type VerifierMode =
 	| { kind: 'scope_update' }
 	| { kind: 'revocation' }
 
-export type RolesScopeRule = { target: string; selector: string }
+export type RolesScopeRule = {
+	target: string
+	selector: string
+	/** Required when `conditions` or `callAllowance` is set. */
+	functionSignature?: string
+	conditions?: readonly ParamCondition[]
+	callAllowance?: string
+}
 
 export type SponsoredRolesPolicy =
 	| { mode: 'allow_all' }
-	| { mode: 'allowlist'; rules: readonly RolesScopeRule[] }
+	| {
+			mode: 'allowlist'
+			rules: readonly RolesScopeRule[]
+			allowances?: readonly PolicyAllowanceInput[]
+	  }
 
 /**
  * What the service hands back. Every field is INPUT to the verifier, never a
@@ -234,6 +256,8 @@ const rolesCallAbi = parseAbi([
 	'function assignRoles(address module, bytes32[] roleKeys, bool[] memberOf)',
 	'function scopeTarget(bytes32 roleKey, address targetAddress)',
 	'function allowFunction(bytes32 roleKey, address targetAddress, bytes4 selector, uint8 options)',
+	'function scopeFunction(bytes32 roleKey, address targetAddress, bytes4 selector, (uint8 parent, uint8 paramType, uint8 operator, bytes compValue)[] conditions, uint8 options)',
+	'function setAllowance(bytes32 key, uint128 balance, uint128 maxRefill, uint128 refill, uint64 period, uint64 timestamp)',
 	'function revokeTarget(bytes32 roleKey, address targetAddress)',
 	'function revokeFunction(bytes32 roleKey, address targetAddress, bytes4 selector)',
 ])
@@ -568,6 +592,22 @@ function unpackMultiSend(packed: Hex): SafeCall[] {
 	return calls
 }
 
+/** A function the batch allows: with a condition tree when it came from `scopeFunction`. */
+type AllowedFunction = {
+	target: Address
+	selector: Hex
+	options: number
+	tree?: readonly ConditionFlat[]
+}
+
+type DecodedAllowance = {
+	key: Hex
+	balance: bigint
+	maxRefill: bigint
+	refill: bigint
+	period: bigint
+}
+
 type Decoded = ReturnType<typeof decodeRolesCall>
 
 function decodeRolesCall(data: Hex) {
@@ -595,13 +635,15 @@ function verifyCalls({
 	roleKey: Hex
 }): {
 	decoded: DecodedRolesCall[]
-	allowed: { target: Address; selector: Hex; options: number }[]
+	allowed: AllowedFunction[]
+	allowances: DecodedAllowance[]
 	scoped: Set<string>
 	revokedFunctions: Set<string>
 	revokedTargets: Set<string>
 } {
 	const decoded: DecodedRolesCall[] = []
-	const allowed: { target: Address; selector: Hex; options: number }[] = []
+	const allowed: AllowedFunction[] = []
+	const allowances: DecodedAllowance[] = []
 	const scoped = new Set<string>()
 	const revokedFunctions = new Set<string>()
 	const revokedTargets = new Set<string>()
@@ -639,7 +681,7 @@ function verifyCalls({
 			fail(
 				11,
 				`call ${index} has an unknown selector`,
-				'enableModule | assignRoles | scopeTarget | allowFunction | revokeTarget | revokeFunction',
+				'enableModule | assignRoles | scopeTarget | allowFunction | scopeFunction | setAllowance | revokeTarget | revokeFunction',
 				size(call.data) >= 4 ? sliceHex(call.data, 0, 4) : call.data,
 			)
 		}
@@ -729,6 +771,44 @@ function verifyCalls({
 				allowed.push({ target, selector, options })
 				break
 			}
+			case 'scopeFunction': {
+				// Setup is the only mode this verifier reads conditions in: a scope
+				// update here edits the live role in place, while the console moves
+				// the executor to a fresh role, which this command does not model.
+				if (mode.kind !== 'setup') refuse(index, parsed.functionName)
+				requireRolesProxy(index, call.to, parsed.functionName)
+				const [key, target, selector, conditions, options] = parsed.args
+				requireRoleKey(index, key)
+				allowed.push({
+					target,
+					selector,
+					options,
+					tree: conditions.map((node) => ({
+						parent: node.parent,
+						paramType: node.paramType,
+						operator: node.operator,
+						compValue: node.compValue,
+					})),
+				})
+				break
+			}
+			case 'setAllowance': {
+				if (mode.kind !== 'setup') refuse(index, parsed.functionName)
+				requireRolesProxy(index, call.to, parsed.functionName)
+				const [key, balance, maxRefill, refill, period, timestamp] = parsed.args
+				// Zero means chain time at execution. Any other value would let a
+				// batch start a budget with accrual already counted.
+				if (timestamp !== 0n) {
+					fail(
+						11,
+						`call ${index} (setAllowance) carries a start time; budgets must start when the batch runs`,
+						'0',
+						timestamp.toString(),
+					)
+				}
+				allowances.push({ key, balance, maxRefill, refill, period })
+				break
+			}
 			case 'revokeTarget': {
 				if (mode.kind === 'setup') refuse(index, parsed.functionName)
 				requireRolesProxy(index, call.to, parsed.functionName)
@@ -779,7 +859,14 @@ function verifyCalls({
 			String(assignRolesCount),
 		)
 	}
-	return { decoded, allowed, scoped, revokedFunctions, revokedTargets }
+	return {
+		decoded,
+		allowed,
+		allowances,
+		scoped,
+		revokedFunctions,
+		revokedTargets,
+	}
 }
 
 function targetsOf(keys: Set<string>): Set<string> {
@@ -838,12 +925,107 @@ function verifyRevocations({
 	}
 }
 
+/** One tree as a comparable string; `''` stands for a plain `allowFunction`. */
+function treeSignature(tree: readonly ConditionFlat[]): string {
+	return JSON.stringify(
+		tree.map((node) => [
+			node.parent,
+			node.paramType,
+			node.operator,
+			node.compValue.toLowerCase(),
+		]),
+	)
+}
+
+/** A rule's conditions and call budget in canonical form, for comparing two copies of a rule. */
+function conditionSignature(rule: RolesScopeRule, label: string): string {
+	const normalized = normalizeRuleConditions(rule, label)
+	return JSON.stringify([
+		normalized.conditions ?? null,
+		normalized.callAllowance ?? null,
+	])
+}
+
+/**
+ * What the typed policy must put on chain, rebuilt here from the typed policy
+ * alone: one condition tree (or none) per call, and one `setAllowance` tuple
+ * per budget, keyed for the role the batch scopes.
+ */
+function expectedFromPolicy(
+	rules: readonly RolesScopeRule[],
+	typedAllowances: readonly PolicyAllowanceInput[] | undefined,
+	scopedRoleKey: Hex,
+) {
+	const trees = new Map<string, string>()
+	try {
+		const budgets = normalizePolicyAllowances(typedAllowances)
+		const allowances = toRolesAllowances(budgets, scopedRoleKey)
+		const keys: Record<string, Hex> = {}
+		for (const allowance of allowances) keys[allowance.name] = allowance.key
+		const usage = { amount: new Set<string>(), calls: new Set<string>() }
+		for (const [index, rule] of rules.entries()) {
+			const label = `your allowed call ${index + 1}`
+			const normalized = normalizeRuleConditions(rule, label)
+			let signature = ''
+			if (normalized.conditions || normalized.callAllowance) {
+				// The tree is typed by the signature, so the signature must be the
+				// function the selector names.
+				if (
+					toFunctionSelector(rule.functionSignature as string) !==
+					rule.selector.toLowerCase()
+				) {
+					throw new Error(`${label}: the signature does not match the selector`)
+				}
+				const tree = buildConditionTree(
+					{
+						functionSignature: rule.functionSignature,
+						conditions: normalized.conditions,
+						callAllowance: normalized.callAllowance,
+					},
+					keys,
+				)
+				signature = tree ? treeSignature(tree) : ''
+				for (const name of normalized.amountAllowances) usage.amount.add(name)
+				if (normalized.callAllowance) usage.calls.add(normalized.callAllowance)
+			}
+			const key = ruleKey(rule.target, rule.selector)
+			const previous = trees.get(key)
+			if (previous !== undefined && previous !== signature) {
+				throw new Error(
+					`${label} repeats another call with different conditions`,
+				)
+			}
+			trees.set(key, signature)
+		}
+		assertAllowancesUsed(budgets, usage)
+		return { trees, allowances }
+	} catch (error) {
+		fail(
+			12,
+			`your policy cannot be encoded: ${error instanceof Error ? error.message : String(error)}`,
+		)
+	}
+}
+
+function describeAllowance(item: {
+	balance: bigint
+	maxRefill: bigint
+	refill: bigint
+	period: bigint
+}): string {
+	return `balance ${item.balance}, refill ${item.refill} every ${item.period}s, max ${item.maxRefill}`
+}
+
 /**
  * Check 12: the allowlist inside the signature is the one you typed — as a
  * set, so ordering never matters — and equals the service's own
  * `scopeRules`; every scoped target is allowed something; every
- * `allowFunction` carries `ExecutionOptions.None`. Revocations must allow
- * nothing. Scope updates must also revoke, explicitly, every rule of
+ * `allowFunction` and `scopeFunction` carries `ExecutionOptions.None`.
+ * Revocations must allow nothing. Condition trees and budgets are rebuilt from
+ * the typed policy and compared byte for byte with the batch: a typed call
+ * with none must be a plain `allowFunction` and the reverse, and the
+ * `setAllowance` calls must be exactly the typed budgets, keyed for the role
+ * this batch scopes. Scope updates must also revoke, explicitly, every rule of
  * `previousRules` the new allowlist drops (`verifyRevocations`), so
  * `previousRules` is REQUIRED in `scope_update` mode, including an explicit
  * empty list when the role currently has no permissions.
@@ -854,7 +1036,9 @@ function verifyPolicy({
 	previousRules,
 	scopeRules,
 	allowed,
+	allowances,
 	scoped,
+	scopedRoleKey,
 	revokedFunctions,
 	revokedTargets,
 }: {
@@ -862,8 +1046,11 @@ function verifyPolicy({
 	policy: SponsoredRolesPolicy
 	previousRules: readonly RolesScopeRule[] | undefined
 	scopeRules: PreparedSponsoredSetup['scopeRules']
-	allowed: readonly { target: Address; selector: Hex; options: number }[]
+	allowed: readonly AllowedFunction[]
+	allowances: readonly DecodedAllowance[]
 	scoped: Set<string>
+	/** The one role this batch scopes. */
+	scopedRoleKey: Hex
 	revokedFunctions: Set<string>
 	revokedTargets: Set<string>
 }): void {
@@ -871,7 +1058,7 @@ function verifyPolicy({
 		if (entry.options !== EXECUTION_OPTIONS_NONE) {
 			fail(
 				12,
-				`allowFunction for ${entry.target} ${entry.selector} is not ExecutionOptions.None`,
+				`${entry.tree ? 'scopeFunction' : 'allowFunction'} for ${entry.target} ${entry.selector} is not ExecutionOptions.None`,
 				'0',
 				String(entry.options),
 			)
@@ -881,8 +1068,8 @@ function verifyPolicy({
 		allowed.map((entry) => ruleKey(entry.target, entry.selector)),
 	)
 	if (mode.kind === 'revocation') {
-		if (allowedSet.size !== 0 || scoped.size !== 0) {
-			fail(12, 'a revocation must not allow or scope anything')
+		if (allowedSet.size !== 0 || scoped.size !== 0 || allowances.length !== 0) {
+			fail(12, 'a revocation must not allow, scope or budget anything')
 		}
 		if (previousRules !== undefined) {
 			verifyRevocations({
@@ -935,6 +1122,109 @@ function verifyPolicy({
 			)
 		}
 	}
+
+	const expected = expectedFromPolicy(
+		policy.rules,
+		policy.allowances,
+		scopedRoleKey,
+	)
+	const actualTrees = new Map<string, string>()
+	for (const entry of allowed) {
+		const key = ruleKey(entry.target, entry.selector)
+		const signature = entry.tree ? treeSignature(entry.tree) : ''
+		const previous = actualTrees.get(key)
+		if (previous !== undefined && previous !== signature) {
+			fail(
+				12,
+				`the request allows ${entry.target} ${entry.selector} twice with different conditions`,
+			)
+		}
+		actualTrees.set(key, signature)
+	}
+	for (const [key, want] of expected.trees) {
+		const have = actualTrees.get(key)
+		if (have !== want) {
+			fail(
+				12,
+				want === ''
+					? `${key} carries conditions you did not set`
+					: have === ''
+						? `${key} has no conditions in the request, but you set some`
+						: `the conditions on ${key} differ from the ones you set`,
+				want || '(none)',
+				have || '(none)',
+			)
+		}
+	}
+
+	// The request's own copy of each rule says the same.
+	const typedSignatures = new Map<string, string>()
+	for (const [index, rule] of policy.rules.entries()) {
+		typedSignatures.set(
+			ruleKey(rule.target, rule.selector),
+			conditionSignature(rule, `your allowed call ${index + 1}`),
+		)
+	}
+	for (const [index, rule] of scopeRules.entries()) {
+		let signature: string
+		try {
+			signature = conditionSignature(rule, `request scopeRules ${index + 1}`)
+		} catch (error) {
+			fail(
+				12,
+				`the request's rule ${index + 1} cannot be read: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
+		const key = ruleKey(rule.target, rule.selector)
+		if (typedSignatures.get(key) !== signature) {
+			fail(
+				12,
+				`the request lists different conditions for ${key} than the ones you set`,
+				typedSignatures.get(key),
+				signature,
+			)
+		}
+	}
+
+	const wanted = new Map(
+		expected.allowances.map((item) => [item.key.toLowerCase(), item]),
+	)
+	const seen = new Set<string>()
+	for (const actual of allowances) {
+		const key = actual.key.toLowerCase()
+		if (seen.has(key)) {
+			fail(12, 'the request sets the same budget twice', undefined, key)
+		}
+		seen.add(key)
+		const want = wanted.get(key)
+		if (!want) {
+			fail(
+				12,
+				'the request sets a budget you did not type, or one keyed for another role',
+				undefined,
+				key,
+			)
+		}
+		if (
+			want.balance !== actual.balance ||
+			want.maxRefill !== actual.maxRefill ||
+			want.refill !== actual.refill ||
+			want.period !== actual.period
+		) {
+			fail(
+				12,
+				`the budget "${want.name}" differs from the one you typed`,
+				describeAllowance(want),
+				describeAllowance(actual),
+			)
+		}
+	}
+	for (const [key, want] of wanted) {
+		if (!seen.has(key)) {
+			fail(12, `the budget "${want.name}" is missing from the request`)
+		}
+	}
+
 	if (mode.kind === 'scope_update') {
 		if (previousRules === undefined) {
 			fail(
@@ -1335,15 +1625,21 @@ export function verifySponsoredSetup(input: {
 
 		// 11. Every call is one of the allowed shapes and nothing else.
 		check = 11
-		const { decoded, allowed, scoped, revokedFunctions, revokedTargets } =
-			verifyCalls({
-				mode,
-				calls,
-				safe,
-				rolesProxy,
-				executorSafe,
-				roleKey,
-			})
+		const {
+			decoded,
+			allowed,
+			allowances,
+			scoped,
+			revokedFunctions,
+			revokedTargets,
+		} = verifyCalls({
+			mode,
+			calls,
+			safe,
+			rolesProxy,
+			executorSafe,
+			roleKey,
+		})
 
 		// 12. The policy is the one you typed, and (scope updates) every rule
 		//     it drops is revoked explicitly inside the batch.
@@ -1354,7 +1650,9 @@ export function verifySponsoredSetup(input: {
 			previousRules: input.previousRules,
 			scopeRules: prepared.scopeRules,
 			allowed,
+			allowances,
 			scoped,
+			scopedRoleKey: roleKey,
 			revokedFunctions,
 			revokedTargets,
 		})
