@@ -6,9 +6,13 @@ import {
 	LIFECYCLE_CALLBACK_NAMES,
 	type LifecycleCallbackName,
 } from '@thyme-labs/sdk/lifecycle'
-import { TASK_RUNTIME_OUTPUT_PREFIXES } from '@thyme-labs/sdk/task-runtime'
+import {
+	TASK_RUNTIME_OUTPUT_PREFIXES,
+	TRIGGER_CONTEXT_SOURCE,
+} from '@thyme-labs/sdk/task-runtime'
 import type { Address } from 'viem'
 import { getAddress, isAddress } from 'viem'
+import type { TriggerPayload } from '../utils/trigger'
 
 type JsonValue =
 	| null
@@ -26,6 +30,7 @@ export interface TaskConfig {
 	rpcUrl?: string // RPC URL for public client
 	account?: Address // address that will execute returned calls
 	env?: Record<string, string> // runtime env loaded from root/task .env files
+	trigger?: TriggerPayload // becomes ctx.trigger; defaults to a manual run
 }
 
 export interface RunResult {
@@ -159,6 +164,7 @@ const RESERVED_SECRET_KEYS = new Set([
 	'THYME_AUTH_TOKEN',
 	'RPC_URL',
 	'SIMULATE_ACCOUNT',
+	'THYME_TRIGGER_JSON',
 ])
 const UNSAFE_SECRET_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
@@ -175,6 +181,11 @@ function buildSecrets(
 	}
 
 	return secrets
+}
+
+/** JS string literal holding the `THYME_TRIGGER_JSON` text for this run. */
+function triggerJsLiteral(config: TaskConfig): string {
+	return JSON.stringify(JSON.stringify(config.trigger ?? { type: 'manual' }))
 }
 
 function resolveTaskAccount(config: TaskConfig): Address {
@@ -325,13 +336,14 @@ function buildContextPreamble(
 	safeSecretsJson: string,
 	safeStorageJson: string,
 	safeRpcUrl: string,
+	safeTriggerJson: string,
 ): string {
 	return `
 import task from '${safeTaskPath}';
 // Resolve viem from the project's own node_modules (same instance the task uses),
 // so ctx.client never skews from the task's viem version. Production parity is
 // driven by the version the project pins (see \`thyme init\` scaffold).
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, decodeEventLog, http, parseAbiItem } from 'viem';
 
 // Match the production wrapper: make JSON.stringify BigInt-safe so a task that
 // serializes viem bigints behaves identically locally and in the cloud, instead
@@ -441,7 +453,7 @@ function assertJsonStorage(value, path = '$') {
 	}
 	throw new Error('Storage contains unsupported value at ' + path);
 }
-
+${TRIGGER_CONTEXT_SOURCE}
 const context = {
 	account: ${safeAccount},
 	args: ${safeArgsJson},
@@ -451,6 +463,8 @@ const context = {
 	logger: new Logger(),
 	secrets: ${safeSecretsJson},
 	storage: ${safeStorageJson},
+	// Parsed by the same code as the cloud wrapper's THYME_TRIGGER_JSON.
+	trigger: readTriggerContext(${safeTriggerJson}),
 };
 `
 }
@@ -523,6 +537,7 @@ export async function runInDeno(
 		safeSecrets,
 		safeStorageJson,
 		safeRpcUrl,
+		triggerJsLiteral(config),
 	)}
 // Runtime probe of which lifecycle callbacks this task defines. Emitted before
 // \`run\` so it survives the error path too — matches the production wrapper.
@@ -781,6 +796,7 @@ export async function runCallbackInDeno(
 		safeSecrets,
 		safeStorageJson,
 		safeRpcUrl,
+		triggerJsLiteral(config),
 	)}
 try {
 	const callbackName = ${JSON.stringify(callback.name)};

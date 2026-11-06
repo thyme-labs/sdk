@@ -16,9 +16,12 @@ export {
 	CLOUD_TASK_RUNNER_SOURCE,
 	TASK_RUNTIME_OUTPUT_PREFIXES,
 } from './task-runtime'
+export type { DecodedTriggerEvent } from './trigger'
+export { decodeTriggerEvent, isEventTrigger } from './trigger'
 export type {
 	Call,
 	ErrorPayload,
+	EventTriggerContext,
 	FailPayload,
 	FailResult,
 	JsonObject,
@@ -29,4 +32,5 @@ export type {
 	TaskDefinition,
 	TaskResult,
 	ThymeContext,
+	TriggerContext,
 } from './types'

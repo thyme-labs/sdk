@@ -5,7 +5,7 @@
 # Thyme Flow SDK & CLI
 
 **Onchain automation that runs from your own Safe.**<br>
-Write a TypeScript task, test it locally, and run it on a cron, an interval or a webhook.
+Write a TypeScript task, test it locally, and run it on a cron, an interval, a webhook or an onchain event.
 
 [![@thyme-labs/sdk](https://img.shields.io/npm/v/@thyme-labs/sdk?label=%40thyme-labs%2Fsdk&color=22C77E)](https://www.npmjs.com/package/@thyme-labs/sdk)
 [![@thyme-labs/cli](https://img.shields.io/npm/v/@thyme-labs/cli?label=%40thyme-labs%2Fcli&color=22C77E)](https://www.npmjs.com/package/@thyme-labs/cli)
@@ -25,7 +25,7 @@ Write a TypeScript task, test it locally, and run it on a cron, an interval or a
 2. **Run it locally.** `thyme run` executes the task in a Deno sandbox. Add `--simulate` to
    check the returned calls against the chain.
 3. **Upload and schedule.** `thyme upload` publishes an immutable release. In the console you
-   attach a trigger (cron, interval or webhook), a profile, args and secrets.
+   attach a trigger (cron, interval, webhook or onchain event), a profile, args and secrets.
 4. **It runs from your Safe.** A Roles profile executes through a Zodiac Roles allowlist on a
    Safe you own, with gas sponsored. The executor can only call the contracts and functions
    you listed, and you revoke it by removing the role or module.
@@ -106,8 +106,10 @@ Gelato Web3 Functions, OpenZeppelin Defender and Chainlink Automation were all r
 | Chainlink `checkUpkeep` / `performUpkeep` | `run` reads the state, and the returned `calls` are executed |
 | Gelato or Defender secrets | Console secrets bound to the executable |
 
-There is no native event or log trigger: poll the state you need from the task and keep a
-cursor in storage. See [triggers](https://flow.thymelabs.io/docs/concepts/triggers) and
+Event and log triggers map to an onchain event trigger on Roles profiles, where it is
+enabled: each matching log starts its own run, with the log in `ctx.trigger`. Elsewhere,
+poll the state you need from the task and keep a cursor in storage. See
+[triggers](https://flow.thymelabs.io/docs/concepts/triggers) and
 [profiles](https://flow.thymelabs.io/docs/concepts/profiles).
 
 Step-by-step migration guides, with the same function before and after:

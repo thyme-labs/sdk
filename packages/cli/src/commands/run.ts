@@ -45,6 +45,12 @@ import {
 	validateTaskName,
 } from '../utils/tasks'
 import {
+	eventDecodeProblem,
+	fetchEventTrigger,
+	loadEventTriggerFile,
+	type TriggerPayload,
+} from '../utils/trigger'
+import {
 	clack,
 	error,
 	info,
@@ -61,6 +67,10 @@ interface RunOptions {
 	persist?: boolean
 	simulateCallbacks?: boolean
 	callback?: string
+	eventTx?: string
+	logIndex?: string
+	eventSignature?: string
+	event?: string
 }
 
 export async function runCommand(taskName?: string, options: RunOptions = {}) {
@@ -150,6 +160,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		process.exit(1)
 	}
 	const { args, storage } = taskInputs
+	config.trigger = await resolveRunTrigger(options, config.rpcUrl)
 
 	// Validate all local inputs before checking the runtime dependency, so a
 	// malformed file is reported consistently even on a machine without Deno.
@@ -312,6 +323,78 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	} else {
 		outro('')
 	}
+}
+
+/**
+ * Build `ctx.trigger` for this run from `--event-tx` (a real log read through
+ * RPC_URL) or `--event` (a saved payload). Without either, it is a manual run.
+ */
+async function resolveRunTrigger(
+	options: RunOptions,
+	rpcUrl: string | undefined,
+): Promise<TriggerPayload> {
+	if (options.event && options.eventTx) {
+		error('Pass either --event or --event-tx, not both')
+		process.exit(2)
+	}
+	if (!options.eventTx && (options.logIndex || options.eventSignature)) {
+		error('--log-index and --event-signature only apply with --event-tx')
+		process.exit(2)
+	}
+
+	let trigger: TriggerPayload
+	if (options.event) {
+		try {
+			trigger = await loadEventTriggerFile(options.event)
+		} catch (err) {
+			error(err instanceof Error ? err.message : String(err))
+			process.exit(1)
+		}
+	} else if (options.eventTx) {
+		let logIndex: number | undefined
+		if (options.logIndex !== undefined) {
+			logIndex = Number(options.logIndex)
+			if (!/^\d+$/.test(options.logIndex) || !Number.isSafeInteger(logIndex)) {
+				error('--log-index must be a non-negative integer')
+				process.exit(2)
+			}
+		}
+		if (!rpcUrl) {
+			error(
+				'--event-tx reads the transaction through RPC_URL; set it in root .env or functions/<task>/.env',
+			)
+			process.exit(1)
+		}
+		const spinner = createSpinner()
+		spinner.start('Fetching the triggering log...')
+		try {
+			trigger = await fetchEventTrigger({
+				rpcUrl,
+				txHash: options.eventTx,
+				logIndex,
+				eventSignature: options.eventSignature,
+			})
+		} catch (err) {
+			spinner.stop('Could not build the event trigger')
+			error(err instanceof Error ? err.message : String(err))
+			process.exit(1)
+		}
+		spinner.stop('Fetched the triggering log')
+	} else {
+		return { type: 'manual' }
+	}
+
+	info(
+		`Event trigger: ${trigger.eventName || 'log'} at block ${trigger.log.blockNumber}, logIndex ${trigger.log.logIndex} (chain ${trigger.chainId})`,
+	)
+	const problem = eventDecodeProblem(trigger)
+	if (problem) {
+		const hint = options.event
+			? 'Check eventSignature in the event file.'
+			: "Pass --event-signature with the event's ABI signature to decode it."
+		warn(`ctx.trigger.event.args will be undefined: ${problem}. ${hint}`)
+	}
+	return trigger
 }
 
 async function loadRunPermissions(

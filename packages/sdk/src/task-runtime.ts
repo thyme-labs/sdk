@@ -15,6 +15,82 @@ const CLOUD_LIFECYCLE_CALLBACKS_SOURCE = `[${LIFECYCLE_CALLBACK_NAMES.map(
 ).join(', ')}]`
 
 /**
+ * Defines `readTriggerContext(raw)`, which turns the `THYME_TRIGGER_JSON`
+ * payload into `ctx.trigger`. Shared by the cloud wrapper and `thyme run` so
+ * both build the same shape. Expects viem's `decodeEventLog` and
+ * `parseAbiItem` in scope.
+ */
+export const TRIGGER_CONTEXT_SOURCE = `
+function toEventTriggerContext(payload) {
+  const log = payload.log;
+  if (
+    typeof payload.chainId !== 'number' ||
+    typeof payload.blockTimestamp !== 'number' ||
+    !log ||
+    typeof log !== 'object' ||
+    !Array.isArray(log.topics)
+  ) {
+    return undefined;
+  }
+  const name = typeof payload.eventName === 'string' ? payload.eventName : '';
+  const signature = typeof payload.eventSignature === 'string' ? payload.eventSignature : '';
+  const trigger = {
+    type: 'event',
+    chainId: payload.chainId,
+    log: {
+      address: log.address,
+      topics: [...log.topics],
+      data: log.data,
+      blockNumber: BigInt(log.blockNumber),
+      blockHash: log.blockHash,
+      transactionHash: log.transactionHash,
+      transactionIndex: log.transactionIndex,
+      logIndex: log.logIndex,
+    },
+    blockTimestamp: payload.blockTimestamp,
+    event: { name, signature },
+  };
+  try {
+    trigger.event.args = decodeEventLog({
+      abi: [parseAbiItem(signature)],
+      topics: log.topics,
+      data: log.data,
+    }).args;
+  } catch {
+    // The raw log is still there; tasks can decode it themselves.
+  }
+  return trigger;
+}
+
+function readTriggerContext(raw) {
+  try {
+    if (typeof raw !== 'string' || raw === '') return undefined;
+    const payload = JSON.parse(raw);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return undefined;
+    }
+    switch (payload.type) {
+      case 'cron':
+      case 'interval':
+      case 'manual':
+        return { type: payload.type };
+      case 'webhook':
+        return typeof payload.name === 'string'
+          ? { type: 'webhook', name: payload.name }
+          : { type: 'webhook' };
+      case 'event':
+        return toEventTriggerContext(payload);
+      default:
+        return undefined;
+    }
+  } catch {
+    // A malformed trigger must not keep the task from running.
+    return undefined;
+  }
+}
+`
+
+/**
  * Deno wrapper uploaded by the Thyme backend next to a compiled `task.js`.
  *
  * This intentionally contains no private application imports or configuration:
@@ -23,7 +99,7 @@ const CLOUD_LIFECYCLE_CALLBACKS_SOURCE = `[${LIFECYCLE_CALLBACK_NAMES.map(
  */
 export const CLOUD_TASK_RUNNER_SOURCE = `
 import task from './task.js';
-import { createPublicClient, getAddress, http, isAddress } from 'npm:viem@2.46.3';
+import { createPublicClient, decodeEventLog, getAddress, http, isAddress, parseAbiItem } from 'npm:viem@2.46.3';
 
 // BigInt-safe JSON.stringify
 const originalStringify = JSON.stringify;
@@ -145,8 +221,20 @@ async function writeStorageOutput(storageValue) {
   }
 }
 
+${TRIGGER_CONTEXT_SOURCE}
+// Older backends never set THYME_TRIGGER_JSON, and a sandbox that only allows
+// listed env names throws on reading an unlisted one.
+function readTriggerEnv() {
+  try {
+    return Deno.env.get('THYME_TRIGGER_JSON');
+  } catch {
+    return undefined;
+  }
+}
+
 const secrets = readSecrets();
 const storage = await readStorage();
+const trigger = readTriggerContext(readTriggerEnv());
 
 const context = {
   account,
@@ -156,6 +244,7 @@ const context = {
   logger: new Logger(),
   secrets,
   storage,
+  trigger,
 };
 
 if (phase === 'callback') {

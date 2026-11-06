@@ -172,6 +172,28 @@ thyme run my-task --callback onSuccess
 thyme run my-task --callback onFail:timeout
 ```
 
+Without trigger flags `ctx.trigger` is `{ type: 'manual' }`. To test an event-triggered
+task, replay a real log:
+
+- `--event-tx <hash>` — read the transaction's receipt and block through `RPC_URL` and
+  run as if one of its logs triggered the task. Picks the first log, or the first log
+  whose topic0 matches `--event-signature`.
+- `--log-index <n>` — pick the log with this block-level `logIndex` instead.
+- `--event-signature <sig>` — the event's ABI signature, e.g.
+  `"event Transfer(address indexed from, address indexed to, uint256 value)"`. Used to
+  pick the log and to decode `ctx.trigger.event.args`; without it, `args` is undefined.
+- `--event <file>` — run with an event payload from a JSON file instead (the
+  `THYME_TRIGGER_JSON` shape: `type: 'event'`, `chainId`, `eventName`,
+  `eventSignature`, `log` with numeric `blockNumber`/`transactionIndex`/`logIndex`, and
+  `blockTimestamp` in unix seconds).
+
+The trigger is also passed to callbacks run with `--simulate-callbacks`.
+
+```bash
+thyme run my-task --event-tx 0xabc... \
+  --event-signature "event Transfer(address indexed from, address indexed to, uint256 value)"
+```
+
 Output includes the task's logs, the result (`canExec`/`calls`, or the skip
 `message`), execution stats (duration, memory, RPC request count), and the produced
 storage.
@@ -553,8 +575,8 @@ Notes:
 
 For `thyme run`, the CLI also loads `functions/<task>/.env` after task selection.
 Task-local values override root `.env` values for that task and are exposed as
-`ctx.secrets`, **except** the reserved keys `THYME_API_URL`, `THYME_AUTH_TOKEN`, and
-`RPC_URL`, and `SIMULATE_ACCOUNT`, which are stripped. `SIMULATE_ACCOUNT` can be set in
+`ctx.secrets`, **except** the reserved keys `THYME_API_URL`, `THYME_AUTH_TOKEN`,
+`RPC_URL`, `SIMULATE_ACCOUNT`, and `THYME_TRIGGER_JSON`, which are stripped. `SIMULATE_ACCOUNT` can be set in
 either root `.env` or `functions/<task>/.env` and becomes `ctx.account` for every local
 run.
 
