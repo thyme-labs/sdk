@@ -141,9 +141,41 @@ thyme run my-task --simulate
 thyme run my-task --persist
 ```
 
-Requires Deno to be installed (https://deno.land/); the CLI checks `deno --version`
-before running. The task executes in a hardened Deno subprocess. Environment is loaded
-from the project root `.env` first, then the task-local `functions/<task>/.env`
+Local execution currently requires **Linux with Landlock enabled**, **util-linux
+`setpriv` 2.41+ with Landlock support**, `ldd`, and the **Deno 2.9.6 Linux
+executable** on `PATH` (not a shell/Node launcher shim).
+Other Deno versions are rejected until validated. Both normal runs and callback
+simulations fail closed if OS isolation cannot be applied. macOS and Windows users
+must run tasks in a Linux VM (or a Linux container with Landlock available); there is
+no direct local-run fallback on those platforms. Other CLI commands remain available.
+
+The kernel confines file reads, including static, dynamic, absolute and symlinked
+module imports, to the selected task directory, the project's `node_modules`, and
+its `package.json`, `deno.json`, `deno.jsonc` and `tsconfig.json` when present. The Deno
+executable, its individual shared libraries, system DNS/timezone files, random/null
+devices and a fresh private runtime cache are also granted for runtime operation.
+The project root, sibling tasks, home directory, CLI credentials and shared Deno
+cache are not granted. This is a file-content boundary, not a promise to hide file
+metadata. The selected task directory (including its `.env`) and installed dependencies
+are readable; only run tasks with the secrets you intend to give them.
+
+Keep task imports in that task's directory and install dependencies in the project's
+`node_modules`. Symlinks between granted locations work; links outside them are denied.
+Task/config/dependency grant roots themselves cannot be symlinks. Workspace links or
+package-manager stores outside `node_modules` must be packaged/installed within it.
+Remote module downloads are disabled: install dependencies before running. Root Deno
+config remains readable, but references to files outside the grants fail. For local
+execution, task source is never bundled by the unrestricted CLI beforehand.
+
+Task code has no filesystem write, process, FFI or ambient environment permission.
+`ctx.storage` still returns through the wrapper; only the CLI writes it to
+`storage.json` with `--persist`. The private runtime cache is discarded after every
+run/callback, so local startup may be slower. Network access for task/RPC calls keeps
+its existing behavior; no new protection against services reachable over the network
+is claimed.
+
+Environment is loaded from the project root `.env` first, then the task-local
+`functions/<task>/.env`
 (task-local values override root values). `SIMULATE_ACCOUNT` is required for every local
 run and is exposed to task code as the checksummed `ctx.account`.
 
@@ -564,7 +596,7 @@ instead.
 ## Requirements
 
 - Node.js 18+
-- Deno (for local task execution)
+- Local task execution: Linux with Landlock, util-linux `setpriv` 2.41+ (Landlock support), `ldd`, and Deno 2.9.6; see `thyme run` above
 
 ## License
 

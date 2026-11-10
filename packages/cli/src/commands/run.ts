@@ -155,7 +155,9 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	// malformed file is reported consistently even on a machine without Deno.
 	const hasDeno = await checkDeno()
 	if (!hasDeno) {
-		error('Deno is not installed. Please install Deno: https://deno.land/')
+		error(
+			'Local runs require Linux, Deno 2.9.6, and Landlock-enabled util-linux setpriv 2.41+. See the CLI README for platform setup.',
+		)
 		process.exit(1)
 	}
 
