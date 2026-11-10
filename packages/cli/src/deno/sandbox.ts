@@ -1,9 +1,20 @@
 import { execFile, spawn } from 'node:child_process'
 import { constants, existsSync } from 'node:fs'
-import { access, mkdtemp, realpath, rm, stat } from 'node:fs/promises'
+import {
+	access,
+	type FileHandle,
+	mkdtemp,
+	realpath,
+	rm,
+	stat,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { delimiter, isAbsolute, join, relative, sep } from 'node:path'
 import { promisify } from 'node:util'
+import {
+	type LocalFileAuthority,
+	PinnedDirectory,
+} from '../utils/confined-files'
 
 // Capture launcher settings before the CLI loads project/task .env files. Task
 // secrets must never become loader options (LD_PRELOAD, DENO_V8_FLAGS, etc.).
@@ -65,10 +76,10 @@ export interface DenoSandbox {
 export async function createDenoSandbox(
 	taskDir: string,
 	projectRoot: string,
+	files?: LocalFileAuthority,
 ): Promise<DenoSandbox> {
 	const deno = await supportedDenoExecutable()
 	const setpriv = await executable('setpriv')
-	const root = await realpath(projectRoot)
 	const taskRelative = relative(projectRoot, taskDir)
 	if (
 		taskRelative === '..' ||
@@ -78,89 +89,109 @@ export async function createDenoSandbox(
 	) {
 		throw new Error('The task must be in its own directory inside the project')
 	}
-	const readPaths = [join(root, taskRelative), join(root, 'node_modules')]
-	for (const name of [
-		'package.json',
-		'deno.json',
-		'deno.jsonc',
-		'tsconfig.json',
-	]) {
-		const path = join(root, name)
-		if (existsSync(path)) readPaths.push(path)
-	}
+	const owned: FileHandle[] = []
+	let scratch: string | undefined
+	try {
+		const project = files?.project ?? (await PinnedDirectory.open(projectRoot))
+		if (!files) owned.push(project.handle)
+		const task =
+			files?.task ?? (await project.descendants(taskRelative.split(sep)))
+		if (!files) owned.push(task.handle)
+		const dependencies = await project.directory('node_modules')
+		owned.push(dependencies.handle)
+		const grants = [task.handle, dependencies.handle]
+		const readPaths = [taskDir, join(projectRoot, 'node_modules')]
+		for (const name of [
+			'package.json',
+			'deno.json',
+			'deno.jsonc',
+			'tsconfig.json',
+		]) {
+			const handle = await project.file(name, true)
+			if (handle) {
+				owned.push(handle)
+				grants.push(handle)
+				readPaths.push(join(projectRoot, name))
+			}
+		}
 
-	const rules: string[] = []
-	const allow = (path: string, rights: string) => {
-		rules.push('--landlock-rule', `path-beneath:${rights}:${path}`)
-	}
-	for (const [index, path] of readPaths.entries()) {
-		// Never turn an out-of-tree symlink into a new filesystem grant. Symlinks
-		// *inside* these roots are checked by Landlock when Deno follows them.
-		if ((await realpath(path)) !== path) {
-			throw new Error(
-				'Task, node_modules and project config grant roots must not be symlinks',
+		const rules: string[] = []
+		const allow = (path: string, rights: string) => {
+			rules.push('--landlock-rule', `path-beneath:${rights}:${path}`)
+		}
+		// Pass the actual approved inodes to setpriv. Reopening their original
+		// names after validation would allow a rename/symlink race to widen a grant.
+		for (const [index] of grants.entries()) {
+			allow(
+				`/proc/self/fd/${index + 3}`,
+				index < 2 ? 'read-file,read-dir' : 'read-file',
 			)
 		}
-		const entry = await stat(path)
-		if (index < 2 ? !entry.isDirectory() : !entry.isFile()) {
-			throw new Error(
-				'Isolation requires task/dependency directories and regular config files',
-			)
+
+		allow(deno, 'read-file,execute')
+		// Grant individual runtime libraries, never /usr, /lib, HOME or the project
+		// root. ldd only inspects the user's trusted Deno executable, not task code.
+		const libraries = await inspect(await executable('ldd'), [deno])
+		for (const match of libraries.matchAll(/(?:=>\s+|^\s*)(\/\S+)\s+\(/gm)) {
+			allow(await realpath(match[1]!), 'read-file,execute')
 		}
-		allow(path, index < 2 ? 'read-file,read-dir' : 'read-file')
-	}
+		for (const path of [
+			'/etc/ld.so.cache',
+			'/etc/resolv.conf',
+			'/etc/hosts',
+			'/etc/nsswitch.conf',
+			'/etc/gai.conf',
+			'/etc/localtime',
+			'/dev/urandom',
+			'/dev/random',
+		]) {
+			if (existsSync(path)) allow(await realpath(path), 'read-file')
+		}
+		allow('/dev/null', 'read-file,write-file')
 
-	allow(deno, 'read-file,execute')
-	// Grant individual runtime libraries, never /usr, /lib, HOME or the project
-	// root. ldd only inspects the user's trusted Deno executable, not task code.
-	const libraries = await inspect(await executable('ldd'), [deno])
-	for (const match of libraries.matchAll(/(?:=>\s+|^\s*)(\/\S+)\s+\(/gm)) {
-		allow(await realpath(match[1]!), 'read-file,execute')
-	}
-	for (const path of [
-		'/etc/ld.so.cache',
-		'/etc/resolv.conf',
-		'/etc/hosts',
-		'/etc/nsswitch.conf',
-		'/etc/gai.conf',
-		'/etc/localtime',
-		'/dev/urandom',
-		'/dev/random',
-	]) {
-		if (existsSync(path)) allow(await realpath(path), 'read-file')
-	}
-	allow('/dev/null', 'read-file,write-file')
-
-	const scratch = await mkdtemp(join(scratchRoot, 'thyme-deno-'))
-	allow(
-		await realpath(scratch),
-		'read-file,read-dir,write-file,remove-dir,remove-file,make-dir,make-reg,refer,truncate',
-	)
-	return {
-		readPaths,
-		spawn: (flags) =>
-			spawn(
-				setpriv,
-				[
-					'--no-new-privs',
-					'--landlock-access',
-					'fs',
-					...rules,
-					'--',
-					deno,
-					...flags,
-				],
-				{
-					cwd: resolve(taskDir),
-					stdio: ['pipe', 'pipe', 'pipe'],
-					env: {
-						...launcherEnv,
-						HOME: scratch,
-						TMPDIR: scratch,
-						DENO_DIR: join(scratch, 'cache'),
+		scratch = await mkdtemp(join(scratchRoot, 'thyme-deno-'))
+		allow(
+			await realpath(scratch),
+			'read-file,read-dir,write-file,remove-dir,remove-file,make-dir,make-reg,refer,truncate',
+		)
+		return {
+			readPaths,
+			spawn: (flags) =>
+				spawn(
+					setpriv,
+					[
+						'--no-new-privs',
+						'--landlock-access',
+						'fs',
+						...rules,
+						'--',
+						deno,
+						...flags,
+					],
+					{
+						cwd: `/proc/${process.pid}/fd/${task.handle.fd}`,
+						stdio: [
+							'pipe',
+							'pipe',
+							'pipe',
+							...grants.map((handle) => handle.fd),
+						],
+						env: {
+							...launcherEnv,
+							HOME: scratch,
+							TMPDIR: scratch,
+							DENO_DIR: join(scratch!, 'cache'),
+						},
 					},
-				},
-			),
-		cleanup: () => rm(scratch, { recursive: true, force: true }),
+				),
+			cleanup: async () => {
+				await Promise.all(owned.map((handle) => handle.close()))
+				await rm(scratch!, { recursive: true, force: true })
+			},
+		}
+	} catch (error) {
+		await Promise.all(owned.map((handle) => handle.close()))
+		if (scratch) await rm(scratch, { recursive: true, force: true })
+		throw error
 	}
 }

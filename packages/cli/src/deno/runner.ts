@@ -7,6 +7,7 @@ import {
 import { TASK_RUNTIME_OUTPUT_PREFIXES } from '@thyme-labs/sdk/task-runtime'
 import type { Address } from 'viem'
 import { getAddress, isAddress } from 'viem'
+import type { LocalFileAuthority } from '../utils/confined-files'
 import {
 	createDenoSandbox,
 	type DenoSandbox,
@@ -24,6 +25,8 @@ type JsonValue =
 type JsonObject = { [key: string]: JsonValue }
 
 export interface TaskConfig {
+	/** CLI-owned directory handles; never populated from task metadata. */
+	files?: LocalFileAuthority
 	memory: number // MB
 	network: boolean
 	rpcUrl?: string // RPC URL for public client
@@ -489,7 +492,11 @@ export async function runInDeno(
 
 	let sandbox: DenoSandbox
 	try {
-		sandbox = await createDenoSandbox(taskDir, absoluteProjectRoot)
+		sandbox = await createDenoSandbox(
+			taskDir,
+			absoluteProjectRoot,
+			config.files,
+		)
 	} catch (error) {
 		return {
 			success: false,
@@ -758,7 +765,11 @@ export async function runCallbackInDeno(
 
 	let sandbox: DenoSandbox
 	try {
-		sandbox = await createDenoSandbox(taskDir, absoluteProjectRoot)
+		sandbox = await createDenoSandbox(
+			taskDir,
+			absoluteProjectRoot,
+			config.files,
+		)
 	} catch (error) {
 		return {
 			success: false,
