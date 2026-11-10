@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { parse as parseEnv } from 'dotenv'
 import type { Address } from 'viem'
 import {
 	BaseError,
@@ -18,13 +18,8 @@ import {
 	runInDeno,
 	type TaskConfig,
 } from '../deno/runner'
-import {
-	type EnvMap,
-	getEnv,
-	loadEnv,
-	loadEnvFile,
-	resolveLoadedEnv,
-} from '../utils/env'
+import { PinnedDirectory } from '../utils/confined-files'
+import { type EnvMap, getEnv } from '../utils/env'
 import { spinner as createSpinner, promptSelect } from '../utils/interactive'
 import {
 	callPairKey,
@@ -33,17 +28,8 @@ import {
 	parsePermissionsManifest,
 	resolvePermissions,
 } from '../utils/permissions'
-import { loadTaskInputs } from '../utils/task-inputs'
-import {
-	discoverTasks,
-	getTaskArgsPath,
-	getTaskEnvPath,
-	getTaskPath,
-	getTaskPermissionsPath,
-	getTaskStoragePath,
-	isThymeProject,
-	validateTaskName,
-} from '../utils/tasks'
+import { parseTaskInputs } from '../utils/task-inputs'
+import { validateTaskName } from '../utils/tasks'
 import {
 	clack,
 	error,
@@ -63,18 +49,51 @@ interface RunOptions {
 	callback?: string
 }
 
+class RunCommandExit extends Error {
+	constructor(readonly code: number) {
+		super('Run command stopped')
+	}
+}
+
 export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	intro('Thyme CLI - Run Task')
+	let project: PinnedDirectory | undefined
+	let functionsDirectory: PinnedDirectory | undefined
+	try {
+		project = await PinnedDirectory.open(process.cwd())
+		functionsDirectory = await project.directory('functions')
+		await runProjectCommand(taskName, options, project, functionsDirectory)
+	} catch (err) {
+		if (!(err instanceof RunCommandExit))
+			error(err instanceof Error ? err.message : String(err))
+		process.exitCode = err instanceof RunCommandExit ? err.code : 1
+	} finally {
+		await functionsDirectory?.close()
+		await project?.close()
+	}
+}
 
-	const projectRoot = process.cwd()
-
-	// Load environment variables
-	const rootEnv = loadEnv(projectRoot)
-
-	// Check if we're in a Thyme project
-	if (!isThymeProject(projectRoot)) {
-		error('Not in a Thyme project')
-		process.exit(1)
+async function runProjectCommand(
+	taskName: string | undefined,
+	options: RunOptions,
+	project: PinnedDirectory,
+	functionsDirectory: PinnedDirectory,
+) {
+	const rootEnv = parseEnv(
+		(await project.read('.env', true, 1024 * 1024)) ?? '',
+	)
+	const manifestText = await project.read('package.json', true, 1024 * 1024)
+	if (manifestText !== undefined) {
+		const manifest = JSON.parse(manifestText)
+		const dependencies = {
+			...manifest?.dependencies,
+			...manifest?.devDependencies,
+		}
+		if (
+			!('@thyme-labs/sdk' in dependencies || '@thyme-labs/cli' in dependencies)
+		) {
+			throw new Error('Not in a Thyme project')
+		}
 	}
 
 	// Discover tasks if no task name provided
@@ -86,14 +105,28 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 			validateTaskName(finalTaskName)
 		} catch (err) {
 			error(err instanceof Error ? err.message : String(err))
-			process.exit(1)
+			throw new RunCommandExit(1)
 		}
 	} else {
-		const tasks = await discoverTasks(projectRoot)
+		const tasks: string[] = []
+		for (const name of await functionsDirectory.entries()) {
+			let candidate: PinnedDirectory | undefined
+			try {
+				validateTaskName(name)
+				candidate = await functionsDirectory.directory(name)
+				const source = await candidate.file('index.ts')
+				await source?.close()
+				tasks.push(name)
+			} catch {
+				// Unsafe links and incomplete tasks are not discovery candidates.
+			} finally {
+				await candidate?.close()
+			}
+		}
 
 		if (tasks.length === 0) {
 			error('No tasks found. Create one with `thyme new`')
-			process.exit(1)
+			throw new RunCommandExit(1)
 		}
 
 		finalTaskName = await promptSelect(
@@ -108,60 +141,75 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 		)
 	}
 
-	let taskPath: string
-	let argsPath: string
-	let storagePath: string
-	let taskEnvPath: string
-	let permissionsPath: string
+	const taskDirectory = await functionsDirectory.directory(finalTaskName)
 	try {
-		taskPath = getTaskPath(projectRoot, finalTaskName)
-		permissionsPath = getTaskPermissionsPath(projectRoot, finalTaskName)
-		argsPath = getTaskArgsPath(projectRoot, finalTaskName)
-		storagePath = getTaskStoragePath(projectRoot, finalTaskName)
-		taskEnvPath = getTaskEnvPath(projectRoot, finalTaskName)
-	} catch (err) {
-		error(err instanceof Error ? err.message : String(err))
-		process.exit(1)
+		await runSelectedTask(
+			finalTaskName,
+			options,
+			project,
+			taskDirectory,
+			rootEnv,
+		)
+	} finally {
+		await taskDirectory.close()
 	}
+}
 
-	// Check if task exists
-	if (!existsSync(taskPath)) {
-		error(`Task "${finalTaskName}" not found`)
-		process.exit(1)
+async function runSelectedTask(
+	finalTaskName: string,
+	options: RunOptions,
+	project: PinnedDirectory,
+	taskDirectory: PinnedDirectory,
+	rootEnv: EnvMap,
+) {
+	const projectRoot = project.path
+	const taskPath = join(taskDirectory.path, 'index.ts')
+	const storagePath = join(taskDirectory.path, 'storage.json')
+	const source = await taskDirectory.file('index.ts')
+	await source?.close()
+
+	// Root defaults yield to explicitly supplied process env; task-local values
+	// override both. Parsing never changes launcher/host process environment.
+	const taskEnv = parseEnv(
+		(await taskDirectory.read('.env', true, 1024 * 1024)) ?? '',
+	)
+	const runtimeEnv = {
+		...Object.fromEntries(
+			Object.entries(rootEnv).map(([key, value]) => [
+				key,
+				process.env[key] ?? value,
+			]),
+		),
+		...taskEnv,
 	}
-
-	// Load task-local env after task selection; these values override root .env.
-	const taskEnv = loadEnvFile(taskEnvPath, { override: true })
-	const runtimeEnv = resolveLoadedEnv(rootEnv, taskEnv)
-
-	// Use default config
 	const config: TaskConfig = {
 		memory: 128,
 		network: true,
 		rpcUrl: runtimeEnv.RPC_URL ?? getEnv('RPC_URL'),
 		env: runtimeEnv,
+		files: { project, task: taskDirectory },
 	}
-
-	let taskInputs: Awaited<ReturnType<typeof loadTaskInputs>>
-	try {
-		taskInputs = await loadTaskInputs(argsPath, storagePath)
-	} catch (err) {
-		error(err instanceof Error ? err.message : String(err))
-		process.exit(1)
-	}
-	const { args, storage } = taskInputs
+	const { args, storage } = parseTaskInputs(
+		await taskDirectory.read('args.json'),
+		await taskDirectory.read('storage.json'),
+	)
 
 	// Validate all local inputs before checking the runtime dependency, so a
 	// malformed file is reported consistently even on a machine without Deno.
 	const hasDeno = await checkDeno()
 	if (!hasDeno) {
-		error('Deno is not installed. Please install Deno: https://deno.land/')
-		process.exit(1)
+		error(
+			'Local runs require Linux, Deno 2.9.6, and Landlock-enabled util-linux setpriv 2.41+. See the CLI README for platform setup.',
+		)
+		throw new RunCommandExit(1)
 	}
 
 	// Validate the optional manifest up front: `thyme upload` refuses an invalid
 	// one, so a local run should not pretend it is fine.
-	const permissions = await loadRunPermissions(permissionsPath, finalTaskName)
+	const permissions = await loadRunPermissions(
+		await taskDirectory.read(PERMISSIONS_FILE_NAME, true, 16 * 1024),
+		finalTaskName,
+	)
 
 	const spinner = createSpinner()
 	spinner.start('Executing task in Deno sandbox...')
@@ -178,7 +226,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 				log(`  ${taskLog}`)
 			}
 		}
-		process.exit(1)
+		throw new RunCommandExit(1)
 	}
 
 	spinner.stop('Task executed successfully')
@@ -195,7 +243,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	// Show result
 	if (!result.result) {
 		error('No result returned from task')
-		process.exit(1)
+		throw new RunCommandExit(1)
 	}
 
 	log('')
@@ -256,8 +304,8 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 	log('')
 	if (options.persist) {
 		try {
-			await writeFile(
-				storagePath,
+			await taskDirectory.writeAtomic(
+				'storage.json',
 				`${JSON.stringify(producedStorage, null, 2)}\n`,
 			)
 			info(`Storage persisted to ${storagePath}`)
@@ -265,7 +313,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 			error(
 				`Failed to persist storage.json: ${err instanceof Error ? err.message : String(err)}`,
 			)
-			process.exit(1)
+			throw new RunCommandExit(1)
 		}
 	} else {
 		step('Produced storage (not persisted):')
@@ -293,6 +341,7 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 				config,
 				projectRoot,
 				storagePath,
+				taskDirectory,
 				preRunStorage: storage,
 				postRunStorage: producedStorage,
 				definedCallbacks: result.definedCallbacks ?? [],
@@ -315,20 +364,10 @@ export async function runCommand(taskName?: string, options: RunOptions = {}) {
 }
 
 async function loadRunPermissions(
-	permissionsPath: string,
+	text: string | undefined,
 	taskName: string,
 ): Promise<PermissionsManifest | undefined> {
-	if (!existsSync(permissionsPath)) return undefined
-
-	let text: string
-	try {
-		text = await readFile(permissionsPath, 'utf-8')
-	} catch (err) {
-		error(
-			`Failed to read functions/${taskName}/${PERMISSIONS_FILE_NAME}: ${err instanceof Error ? err.message : String(err)}`,
-		)
-		process.exit(1)
-	}
+	if (text === undefined) return undefined
 
 	const parsed = parsePermissionsManifest(text)
 	if (!parsed.ok) {
@@ -337,7 +376,7 @@ async function loadRunPermissions(
 				.map((message) => `  - ${message}`)
 				.join('\n')}`,
 		)
-		process.exit(1)
+		throw new RunCommandExit(1)
 	}
 	return parsed.manifest
 }
@@ -686,6 +725,7 @@ async function simulateCallbacksFlow(params: {
 	config: TaskConfig
 	projectRoot: string
 	storagePath: string
+	taskDirectory: PinnedDirectory
 	preRunStorage: unknown
 	postRunStorage: unknown
 	definedCallbacks: string[]
@@ -698,6 +738,7 @@ async function simulateCallbacksFlow(params: {
 		config,
 		projectRoot,
 		storagePath,
+		taskDirectory,
 		preRunStorage,
 		postRunStorage,
 		definedCallbacks,
@@ -780,7 +821,7 @@ async function simulateCallbacksFlow(params: {
 			error(
 				`Unknown --callback value "${requestedOutcome}". This task supports: ${available.join(', ')}`,
 			)
-			process.exit(2)
+			throw new RunCommandExit(2)
 		}
 		selected = normalized
 		info(`Simulating callback outcome: ${pc.cyan(selected)}`)
@@ -846,8 +887,8 @@ async function simulateCallbacksFlow(params: {
 	log('')
 	if (persist) {
 		try {
-			await writeFile(
-				storagePath,
+			await taskDirectory.writeAtomic(
+				'storage.json',
 				`${JSON.stringify(callbackStorage, null, 2)}\n`,
 			)
 			info(`Storage persisted to ${storagePath}`)

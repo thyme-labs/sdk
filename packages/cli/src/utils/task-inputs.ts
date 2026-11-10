@@ -1,23 +1,16 @@
-import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { basename, dirname, resolve } from 'node:path'
+import { PinnedDirectory } from './confined-files'
 
 export interface TaskInputs {
 	args: unknown
 	storage: unknown
 }
 
-async function readOptionalJson(path: string, label: string): Promise<unknown> {
-	if (!existsSync(path)) return {}
-
-	let contents: string
-	try {
-		contents = await readFile(path, 'utf-8')
-	} catch (err) {
-		throw new Error(
-			`Failed to read ${label}: ${err instanceof Error ? err.message : String(err)}`,
-		)
-	}
-
+function parseOptionalJson(
+	contents: string | undefined,
+	label: string,
+): unknown {
+	if (contents === undefined) return {}
 	try {
 		return JSON.parse(contents)
 	} catch (err) {
@@ -27,18 +20,33 @@ async function readOptionalJson(path: string, label: string): Promise<unknown> {
 	}
 }
 
-/**
- * Load the two local files that form a task run's persisted input. Either file
- * may be absent and defaults to {}, but an existing unreadable or malformed
- * file is fatal so `--persist` can never replace it after a fallback run.
+export function parseTaskInputs(
+	args: string | undefined,
+	storage: string | undefined,
+): TaskInputs {
+	return {
+		args: parseOptionalJson(args, 'args.json'),
+		storage: parseOptionalJson(storage, 'storage.json'),
+	}
+}
+
+/** For callers explicitly authorizing file paths. The CLI instead retains its
+ * selected task directory and passes descriptor-read contents to parseTaskInputs.
+ * Missing files default to {}; unsafe/unreadable/malformed inputs are fatal.
  */
 export async function loadTaskInputs(
 	argsPath: string,
 	storagePath: string,
 ): Promise<TaskInputs> {
-	const [args, storage] = await Promise.all([
-		readOptionalJson(argsPath, 'args.json'),
-		readOptionalJson(storagePath, 'storage.json'),
-	])
-	return { args, storage }
+	const read = async (path: string) => {
+		const absolute = resolve(path)
+		const directory = await PinnedDirectory.open(dirname(absolute))
+		try {
+			return await directory.read(basename(absolute))
+		} finally {
+			await directory.close()
+		}
+	}
+	const [args, storage] = await Promise.all([read(argsPath), read(storagePath)])
+	return parseTaskInputs(args, storage)
 }

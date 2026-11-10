@@ -1,6 +1,4 @@
-import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import type { TaskResult } from '@thyme-labs/sdk'
 import {
 	LIFECYCLE_CALLBACK_NAMES,
@@ -9,6 +7,12 @@ import {
 import { TASK_RUNTIME_OUTPUT_PREFIXES } from '@thyme-labs/sdk/task-runtime'
 import type { Address } from 'viem'
 import { getAddress, isAddress } from 'viem'
+import type { LocalFileAuthority } from '../utils/confined-files'
+import {
+	createDenoSandbox,
+	type DenoSandbox,
+	supportedDenoExecutable,
+} from './sandbox'
 
 type JsonValue =
 	| null
@@ -21,6 +25,8 @@ type JsonValue =
 type JsonObject = { [key: string]: JsonValue }
 
 export interface TaskConfig {
+	/** CLI-owned directory handles; never populated from task metadata. */
+	files?: LocalFileAuthority
 	memory: number // MB
 	network: boolean
 	rpcUrl?: string // RPC URL for public client
@@ -247,22 +253,8 @@ const NODE_BUILTINS = [
 	'zlib',
 ]
 
-/**
- * Build the Deno permission/launch flags shared by every local execution
- * (`run` and callback re-entries alike) — kept in one place so the two paths
- * can never drift apart on what they're allowed to touch.
- *
- * Runs read-only with `--node-modules-dir=manual` so Deno resolves `viem` /
- * `@thyme-labs/sdk` from the project's existing `node_modules` without trying to
- * write a local `node_modules/.deno` (which `auto` does, and which fails under our
- * read-only grant). Read access is scoped to the task folder + `node_modules` +
- * config files — NOT the whole project — so a task can't read sibling secrets.
- */
-function buildDenoFlags(
-	taskDir: string,
-	absoluteProjectRoot: string,
-	config: TaskConfig,
-): string[] {
+/** Deno permissions supplement the OS filesystem boundary for both entrypoints. */
+function buildDenoFlags(readPaths: string[], config: TaskConfig): string[] {
 	// Create import map to redirect bare Node.js imports to node: prefix
 	const importMap: Record<string, string> = {}
 	for (const name of NODE_BUILTINS) {
@@ -271,28 +263,12 @@ function buildDenoFlags(
 	const importMapJson = JSON.stringify({ imports: importMap })
 	const importMapDataUrl = `data:application/json,${encodeURIComponent(importMapJson)}`
 
-	const denoFlags = ['run', '--no-prompt']
+	const denoFlags = ['run', '--no-prompt', '--no-remote', '--no-lock']
 	denoFlags.push(`--import-map=${importMapDataUrl}`)
 	denoFlags.push('--node-modules-dir=manual')
 
-	// Grant read ONLY to what module resolution needs — the task's own folder, the
-	// project's node_modules, and its package.json / Deno config — NOT the whole
-	// project root. This keeps an untrusted or copy-pasted task from reading sibling
-	// tasks' .env, the repo .git, or other credentials and exfiltrating them over the
-	// network. (Production is tighter still: the sandbox only holds wrapper.js + the
-	// bundled task.)
-	denoFlags.push(`--allow-read=${taskDir}`)
-	denoFlags.push(`--allow-read=${join(absoluteProjectRoot, 'node_modules')}`)
-	for (const name of [
-		'package.json',
-		'deno.json',
-		'deno.jsonc',
-		'tsconfig.json',
-	]) {
-		const configPath = join(absoluteProjectRoot, name)
-		if (existsSync(configPath)) {
-			denoFlags.push(`--allow-read=${configPath}`)
-		}
+	for (const path of readPaths) {
+		denoFlags.push(`--allow-read=${path}`)
 	}
 
 	// Add memory limit if specified
@@ -514,7 +490,23 @@ export async function runInDeno(
 	const rpcUrl = config.rpcUrl ?? runtimeEnv.RPC_URL
 	const safeRpcUrl = rpcUrl ? JSON.stringify(rpcUrl) : 'undefined'
 
-	const denoFlags = buildDenoFlags(taskDir, absoluteProjectRoot, config)
+	let sandbox: DenoSandbox
+	try {
+		sandbox = await createDenoSandbox(
+			taskDir,
+			absoluteProjectRoot,
+			config.files,
+		)
+	} catch (error) {
+		return {
+			success: false,
+			logs: [],
+			error: sanitizeErrorMessage(
+				`Cannot initialize local filesystem isolation: ${error instanceof Error ? error.message : String(error)}`,
+			),
+		}
+	}
+	const denoFlags = buildDenoFlags(sandbox.readPaths, config)
 
 	const execScript = `${buildContextPreamble(
 		safeTaskPath,
@@ -587,15 +579,11 @@ try {
 }
 `
 
-	return new Promise((resolve) => {
-		const proc = spawn('deno', denoFlags, {
-			stdio: ['pipe', 'pipe', 'pipe'],
-			cwd: taskDir,
-			env: {
-				...process.env,
-				...runtimeEnv,
-			},
-		})
+	return new Promise<RunResult>((resolve) => {
+		const proc = sandbox.spawn(denoFlags)
+		// Setup can fail before stdin is consumed (e.g. Landlock unavailable).
+		// Report the process error/exit instead of an unhandled EPIPE.
+		proc.stdin?.on('error', () => {})
 
 		let stdout = ''
 		let stderr = ''
@@ -630,7 +618,8 @@ try {
 					success: false,
 					logs,
 					error: sanitizeErrorMessage(
-						stderr || `Process exited with code ${code}`,
+						stderr ||
+							`Isolated Deno exited with code ${code}; Linux Landlock and setpriv 2.41+ are required`,
 					),
 				})
 				return
@@ -710,10 +699,12 @@ try {
 			resolve({
 				success: false,
 				logs,
-				error: sanitizeErrorMessage(`Failed to spawn Deno: ${error.message}`),
+				error: sanitizeErrorMessage(
+					`Failed to start isolated Deno: ${error.message}`,
+				),
 			})
 		})
-	})
+	}).finally(() => sandbox.cleanup())
 }
 
 /**
@@ -772,7 +763,23 @@ export async function runCallbackInDeno(
 	const rpcUrl = config.rpcUrl ?? runtimeEnv.RPC_URL
 	const safeRpcUrl = rpcUrl ? JSON.stringify(rpcUrl) : 'undefined'
 
-	const denoFlags = buildDenoFlags(taskDir, absoluteProjectRoot, config)
+	let sandbox: DenoSandbox
+	try {
+		sandbox = await createDenoSandbox(
+			taskDir,
+			absoluteProjectRoot,
+			config.files,
+		)
+	} catch (error) {
+		return {
+			success: false,
+			logs: [],
+			error: sanitizeErrorMessage(
+				`Cannot initialize local filesystem isolation: ${error instanceof Error ? error.message : String(error)}`,
+			),
+		}
+	}
+	const denoFlags = buildDenoFlags(sandbox.readPaths, config)
 
 	const execScript = `${buildContextPreamble(
 		safeTaskPath,
@@ -799,15 +806,11 @@ try {
 }
 `
 
-	return new Promise((resolve) => {
-		const proc = spawn('deno', denoFlags, {
-			stdio: ['pipe', 'pipe', 'pipe'],
-			cwd: taskDir,
-			env: {
-				...process.env,
-				...runtimeEnv,
-			},
-		})
+	return new Promise<RunResult>((resolve) => {
+		const proc = sandbox.spawn(denoFlags)
+		// Setup can fail before stdin is consumed (e.g. Landlock unavailable).
+		// Report the process error/exit instead of an unhandled EPIPE.
+		proc.stdin?.on('error', () => {})
 
 		let stdout = ''
 		let stderr = ''
@@ -839,7 +842,8 @@ try {
 					success: false,
 					logs,
 					error: sanitizeErrorMessage(
-						stderr || `Process exited with code ${code}`,
+						stderr ||
+							`Isolated Deno exited with code ${code}; Linux Landlock and setpriv 2.41+ are required`,
 					),
 				})
 				return
@@ -879,19 +883,20 @@ try {
 			resolve({
 				success: false,
 				logs,
-				error: sanitizeErrorMessage(`Failed to spawn Deno: ${error.message}`),
+				error: sanitizeErrorMessage(
+					`Failed to start isolated Deno: ${error.message}`,
+				),
 			})
 		})
-	})
+	}).finally(() => sandbox.cleanup())
 }
 
-/**
- * Check if Deno is installed
- */
+/** Check the supported local runtime without executing any task code. */
 export async function checkDeno(): Promise<boolean> {
-	return new Promise((resolve) => {
-		const proc = spawn('deno', ['--version'], { stdio: 'ignore' })
-		proc.on('close', (code) => resolve(code === 0))
-		proc.on('error', () => resolve(false))
-	})
+	try {
+		await supportedDenoExecutable()
+		return true
+	} catch {
+		return false
+	}
 }

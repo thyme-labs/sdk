@@ -141,11 +141,71 @@ thyme run my-task --simulate
 thyme run my-task --persist
 ```
 
-Requires Deno to be installed (https://deno.land/); the CLI checks `deno --version`
-before running. The task executes in a hardened Deno subprocess. Environment is loaded
-from the project root `.env` first, then the task-local `functions/<task>/.env`
-(task-local values override root values). `SIMULATE_ACCOUNT` is required for every local
-run and is exposed to task code as the checksummed `ctx.account`.
+Local execution currently requires **Linux with Landlock enabled**, **util-linux
+`setpriv` 2.41+ with Landlock support**, `ldd`, and the **Deno 2.9.6 Linux
+executable** on `PATH` (not a shell/Node launcher shim).
+Other Deno versions are rejected until validated. Both normal runs and callback
+simulations fail closed if OS isolation cannot be applied. macOS and Windows users
+must run tasks in a Linux VM (or a Linux container with Landlock available); there is
+no direct local-run fallback on those platforms. Other CLI commands remain available.
+
+The kernel confines file reads, including static, dynamic, absolute and symlinked
+module imports, to the selected task directory, the project's `node_modules`, and
+its `package.json`, `deno.json`, `deno.jsonc` and `tsconfig.json` when present. The Deno
+executable, its individual shared libraries, system DNS/timezone files, random/null
+devices and a fresh private runtime cache are also granted for runtime operation.
+The project root, sibling tasks, home directory, CLI credentials and shared Deno
+cache are not granted to task code. Before launching it, the CLI separately authorizes
+only root `.env`/`package.json` and the selected task's `.env`, `args.json`,
+`storage.json`, `permissions.json` and entry file. It retains directory descriptors
+from selection through both execution phases and persistence. Input reads open each
+component without following symlinks, pin the leaf before reading, require a regular
+file with exactly one hard link, bound its size, and reject changes during the read.
+The same pinned directory/file handles define the runtime grants, so replacing a
+pathname between validation and launch cannot widen them.
+
+Local inputs and config files, including their directory components below the selected
+project, must not be symlinks (even links within the project), hardlinks, FIFOs or
+devices. Task discovery skips unsafe directory/entry links. This stricter input rule
+is separate from module imports: module symlinks within runtime grants still work.
+`thyme run` has no `--args`, `--storage`, `--env-file` or `--config` path override;
+project/task metadata cannot authorize another host input path. The current working
+directory is the explicit project authority. Use ordinary files under that project.
+A readable `/proc/self/fd` is required; there is no path-based fallback.
+
+Root/task `.env` and root `package.json` are limited to 1 MiB; permissions to 16 KiB;
+args/storage inputs and formatted persisted storage to 100 MiB. Malformed root
+`package.json` is now fatal. Missing optional env/args/storage/permissions files keep
+their existing empty defaults. Files outside these authorities are not read by the
+local-run input loader. This is a file-content boundary, not a promise to hide file
+metadata. The selected task directory (including its `.env`) and installed dependencies
+are readable; only run tasks with the secrets you intend to give them.
+
+Keep task imports in that task's directory and install dependencies in the project's
+`node_modules`. Symlinks between granted locations work; links outside them are denied.
+Task/config/dependency grant roots themselves cannot be symlinks. Workspace links or
+package-manager stores outside `node_modules` must be packaged/installed within it.
+Remote module downloads are disabled: install dependencies before running. Root Deno
+config remains readable, but references to files outside the grants fail. For local
+execution, task source is never bundled by the unrestricted CLI beforehand.
+
+Task code has no filesystem write, process, FFI or ambient environment permission.
+`ctx.storage` still returns through the wrapper. With `--persist`, the CLI writes a
+new mode-0600 file in the retained task directory and atomically replaces the storage
+directory entry. It never truncates an existing inode or follows a replaced target
+symlink. Temporary files are removed on handled failures. If the directory is renamed
+while a run is active, the original directory remains the write authority; a
+replacement pathname is never adopted. The private runtime cache is discarded after
+every run/callback, so local startup may be slower. Network access for task/RPC calls keeps
+its existing behavior; no new protection against services reachable over the network
+is claimed.
+
+Environment is loaded from the project root `.env` first, then the task-local
+`functions/<task>/.env` (task-local values override root values and explicitly supplied process variables;
+process variables otherwise override root defaults). These files populate task context,
+not the CLI process environment: set launcher/UI controls in the shell or CLI flags.
+`SIMULATE_ACCOUNT` is required for every local run and is exposed to task code as the
+checksummed `ctx.account`.
 
 **Options:**
 
@@ -564,7 +624,7 @@ instead.
 ## Requirements
 
 - Node.js 18+
-- Deno (for local task execution)
+- Local task execution: Linux with Landlock, util-linux `setpriv` 2.41+ (Landlock support), `ldd`, and Deno 2.9.6; see `thyme run` above
 
 ## License
 
